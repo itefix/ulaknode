@@ -1,0 +1,18 @@
+# Private keys — never commit
+tools/private.pem
+*.pem
+*.key
+
+# Environment files
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
