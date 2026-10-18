@@ -1,6 +1,4 @@
 
-![ulaknode](docs/ulaknode.jpg)
-
 # ulaknode — self-hosted mail server
 
 **Postfix + Dovecot + OpenDKIM/OpenDMARC + SpamAssassin — a complete business mail stack in a single Docker container.**
