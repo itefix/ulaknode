@@ -1,0 +1,154 @@
+#!/bin/bash
+# ulaknode-dmarc — generate and check DMARC DNS records
+# Usage: ulaknode-dmarc <command> [args]
+#
+#   generate <domain> [options]  — print the DMARC TXT record to publish
+#   show     <domain>            — look up the current published DMARC record
+#
+# Generate options (all optional):
+#   --policy    <none|quarantine|reject>   p= tag (default: quarantine)
+#   --sp        <none|quarantine|reject>   subdomain policy, sp= tag
+#   --rua       <mailto:addr>              aggregate report address
+#   --ruf       <mailto:addr>              forensic report address
+#   --pct       <0-100>                    % of messages to apply policy to (default: 100)
+#   --adkim     <r|s>                      DKIM alignment: relaxed or strict (default: r)
+#   --aspf      <r|s>                      SPF alignment: relaxed or strict (default: r)
+#   --fo        <0|1|d|s>                  forensic reporting option (default: 0)
+
+set -euo pipefail
+
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-dmarc <generate|show> [args]" >&2
+    echo "" >&2
+    echo "  generate <domain> [options]   print DMARC record to publish" >&2
+    echo "  show     <domain>             look up published DMARC record in DNS" >&2
+    echo "" >&2
+    echo "Generate options:" >&2
+    echo "  --policy <none|quarantine|reject>  action for failing mail (default: quarantine)" >&2
+    echo "  --sp     <none|quarantine|reject>  subdomain policy (default: same as --policy)" >&2
+    echo "  --rua    <mailto:addr>             aggregate report recipient" >&2
+    echo "  --ruf    <mailto:addr>             forensic report recipient" >&2
+    echo "  --pct    <0-100>                   % of messages subject to policy (default: 100)" >&2
+    echo "  --adkim  <r|s>                     DKIM alignment mode (default: r)" >&2
+    echo "  --aspf   <r|s>                     SPF alignment mode (default: r)" >&2
+    echo "  --fo     <0|1|d|s>                 forensic options (default: 0)" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  ulaknode-dmarc generate example.com --policy none --rua mailto:dmarc@example.com" >&2
+    echo "  ulaknode-dmarc generate example.com --policy reject --rua mailto:dmarc@example.com --pct 100" >&2
+    echo "  ulaknode-dmarc show example.com" >&2
+    exit 1
+}
+
+validate_policy() {
+    case "$1" in
+      none|quarantine|reject) ;;
+      *) echo "Error: policy must be none, quarantine, or reject." >&2; exit 1 ;;
+    esac
+}
+
+case "$CMD" in
+  generate)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    shift 2
+
+    POLICY="quarantine"
+    SP=""
+    RUA=""
+    RUF=""
+    PCT="100"
+    ADKIM="r"
+    ASPF="r"
+    FO="0"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --policy)  validate_policy "$2"; POLICY="$2"; shift 2 ;;
+          --sp)      validate_policy "$2"; SP="$2"; shift 2 ;;
+          --rua)     RUA="$2"; shift 2 ;;
+          --ruf)     RUF="$2"; shift 2 ;;
+          --pct)
+            if ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -gt 100 ]]; then
+                echo "Error: --pct must be 0-100." >&2; exit 1
+            fi
+            PCT="$2"; shift 2 ;;
+          --adkim)
+            [[ "$2" == "r" || "$2" == "s" ]] || { echo "Error: --adkim must be r or s." >&2; exit 1; }
+            ADKIM="$2"; shift 2 ;;
+          --aspf)
+            [[ "$2" == "r" || "$2" == "s" ]] || { echo "Error: --aspf must be r or s." >&2; exit 1; }
+            ASPF="$2"; shift 2 ;;
+          --fo)
+            [[ "$2" =~ ^[01ds]$ ]] || { echo "Error: --fo must be 0, 1, d, or s." >&2; exit 1; }
+            FO="$2"; shift 2 ;;
+          *) echo "Error: unknown option '$1'." >&2; usage ;;
+        esac
+    done
+
+    RECORD="v=DMARC1; p=$POLICY"
+    [[ -n "$SP" && "$SP" != "$POLICY" ]] && RECORD+="; sp=$SP"
+    [[ "$ADKIM" != "r" ]] && RECORD+="; adkim=$ADKIM"
+    [[ "$ASPF"  != "r" ]] && RECORD+="; aspf=$ASPF"
+    [[ -n "$RUA" ]] && RECORD+="; rua=$RUA"
+    [[ -n "$RUF" ]] && RECORD+="; ruf=$RUF; fo=$FO"
+    [[ "$PCT" != "100" ]] && RECORD+="; pct=$PCT"
+
+    echo "Publish this DNS TXT record:"
+    echo ""
+    echo "  _dmarc.$DOMAIN  IN TXT  \"$RECORD\""
+    echo ""
+    echo "Record name:  _dmarc.$DOMAIN"
+    echo "Record value: $RECORD"
+    echo ""
+    case "$POLICY" in
+      none)        echo "Policy: none — monitor only, no action taken on failing mail" ;;
+      quarantine)  echo "Policy: quarantine — failing mail goes to spam/junk folder" ;;
+      reject)      echo "Policy: reject — failing mail is rejected outright" ;;
+    esac
+    if [[ -z "$RUA" ]]; then
+        echo ""
+        echo "Tip: add --rua mailto:dmarc@$DOMAIN to receive aggregate reports"
+    fi
+    ;;
+
+  show)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    if ! command -v dig &>/dev/null && ! command -v host &>/dev/null; then
+        echo "Error: 'dig' or 'host' is required for DNS lookups." >&2
+        exit 1
+    fi
+
+    echo "DMARC record for $DOMAIN:"
+    if command -v dig &>/dev/null; then
+        RESULT=$(dig +short TXT "_dmarc.$DOMAIN" 2>/dev/null | grep -i '"v=DMARC1' || true)
+    else
+        RESULT=$(host -t TXT "_dmarc.$DOMAIN" 2>/dev/null | grep -i 'v=DMARC1' || true)
+    fi
+
+    if [[ -z "$RESULT" ]]; then
+        echo "  (no DMARC record found at _dmarc.$DOMAIN)"
+    else
+        echo "  $RESULT"
+    fi
+    ;;
+
+  -h|--help|"")
+    usage
+    ;;
+
+  *)
+    echo "Error: unknown command '$CMD'." >&2
+    echo "Run 'ulaknode-dmarc --help' for usage." >&2
+    exit 1
+    ;;
+esac

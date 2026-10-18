@@ -1,0 +1,131 @@
+#!/bin/bash
+# ulaknode-spf — generate and check SPF DNS records
+# Usage: ulaknode-spf <command> [args]
+#
+#   generate <domain> [options]  — print the SPF TXT record to publish
+#   show     <domain>            — look up the current published SPF record
+#
+# Generate options (all optional, combinable):
+#   --mx                  include the domain's MX hosts (recommended)
+#   --ip4 <addr[/prefix]> authorize an IPv4 address or CIDR range
+#   --ip6 <addr[/prefix]> authorize an IPv6 address or CIDR range
+#   --include <domain>    authorize another domain's SPF (e.g. a smarthost)
+#   --all <softfail|fail|neutral>  end policy (default: softfail)
+
+set -euo pipefail
+
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-spf <generate|show> [args]" >&2
+    echo "" >&2
+    echo "  generate <domain> [options]   print SPF record to publish" >&2
+    echo "  show     <domain>             look up published SPF record in DNS" >&2
+    echo "" >&2
+    echo "Generate options:" >&2
+    echo "  --mx                   include the domain's own MX hosts" >&2
+    echo "  --ip4 <addr[/prefix]>  authorize an IPv4 address or range" >&2
+    echo "  --ip6 <addr[/prefix]>  authorize an IPv6 address or range" >&2
+    echo "  --include <domain>     authorize another domain via include" >&2
+    echo "  --all <softfail|fail|neutral>  end policy (default: softfail)" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  ulaknode-spf generate example.com --mx --ip4 203.0.113.10" >&2
+    echo "  ulaknode-spf generate example.com --include sendgrid.net --all fail" >&2
+    echo "  ulaknode-spf show example.com" >&2
+    exit 1
+}
+
+case "$CMD" in
+  generate)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    shift 2
+
+    USE_MX=0
+    IP4_LIST=()
+    IP6_LIST=()
+    INCLUDE_LIST=()
+    ALL_POLICY="softfail"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --mx)        USE_MX=1; shift ;;
+          --ip4)       IP4_LIST+=("$2"); shift 2 ;;
+          --ip6)       IP6_LIST+=("$2"); shift 2 ;;
+          --include)   INCLUDE_LIST+=("$2"); shift 2 ;;
+          --all)
+            case "$2" in
+              softfail|fail|neutral) ALL_POLICY="$2"; shift 2 ;;
+              *) echo "Error: --all must be softfail, fail, or neutral." >&2; exit 1 ;;
+            esac
+            ;;
+          *) echo "Error: unknown option '$1'." >&2; usage ;;
+        esac
+    done
+
+    case "$ALL_POLICY" in
+      softfail) ALL_TAG="~all" ;;
+      fail)     ALL_TAG="-all" ;;
+      neutral)  ALL_TAG="?all" ;;
+    esac
+
+    RECORD="v=spf1"
+    [[ $USE_MX -eq 1 ]] && RECORD+=" mx"
+    for ip in "${IP4_LIST[@]+"${IP4_LIST[@]}"}"; do RECORD+=" ip4:$ip"; done
+    for ip in "${IP6_LIST[@]+"${IP6_LIST[@]}"}"; do RECORD+=" ip6:$ip"; done
+    for inc in "${INCLUDE_LIST[@]+"${INCLUDE_LIST[@]}"}"; do RECORD+=" include:$inc"; done
+    RECORD+=" $ALL_TAG"
+
+    echo "Publish this DNS TXT record:"
+    echo ""
+    echo "  $DOMAIN  IN TXT  \"$RECORD\""
+    echo ""
+    echo "Record name:  $DOMAIN"
+    echo "Record value: $RECORD"
+    echo ""
+    case "$ALL_POLICY" in
+      softfail) echo "Policy: softfail (~all) — unauthorized senders are marked but not rejected (recommended to start)" ;;
+      fail)     echo "Policy: fail (-all) — unauthorized senders are rejected outright" ;;
+      neutral)  echo "Policy: neutral (?all) — no assertion about unauthorized senders" ;;
+    esac
+    ;;
+
+  show)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    if ! command -v dig &>/dev/null && ! command -v host &>/dev/null; then
+        echo "Error: 'dig' or 'host' is required for DNS lookups." >&2
+        exit 1
+    fi
+
+    echo "SPF record for $DOMAIN:"
+    if command -v dig &>/dev/null; then
+        RESULT=$(dig +short TXT "$DOMAIN" 2>/dev/null | grep -i '"v=spf1' || true)
+    else
+        RESULT=$(host -t TXT "$DOMAIN" 2>/dev/null | grep -i 'v=spf1' || true)
+    fi
+
+    if [[ -z "$RESULT" ]]; then
+        echo "  (no SPF record found)"
+    else
+        echo "  $RESULT"
+    fi
+    ;;
+
+  -h|--help|"")
+    usage
+    ;;
+
+  *)
+    echo "Error: unknown command '$CMD'." >&2
+    echo "Run 'ulaknode-spf --help' for usage." >&2
+    exit 1
+    ;;
+esac

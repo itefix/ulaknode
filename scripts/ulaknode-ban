@@ -1,0 +1,89 @@
+#!/bin/bash
+# ulaknode-ban — ban/unban an IP at the Postfix/Dovecot application layer.
+# This is fail2ban's action target (see fail2ban/action.d/ulaknode.conf) —
+# it edits the same access-control tables Postfix and Dovecot already read,
+# instead of touching iptables, so no extra container capabilities are
+# needed.
+
+set -euo pipefail
+
+PF_TABLE=/etc/postfix/fail2ban_clients
+DC_DIR=/etc/dovecot/fail2ban.d
+
+usage() {
+    echo "Usage: ulaknode-ban <ban|unban> <ip> <smtp|imap>" >&2
+    exit 1
+}
+
+ACTION="${1:-}"
+IP="${2:-}"
+PROTOCOL="${3:-}"
+
+[[ "$ACTION" == "-h" || "$ACTION" == "--help" || -z "$ACTION" ]] && usage
+
+case "$ACTION" in
+  ban|unban) ;;
+  *) echo "Error: invalid action '$ACTION'. Allowed: ban|unban" >&2; exit 1 ;;
+esac
+
+[[ -z "$IP" ]] && { echo "Error: ip required" >&2; exit 1; }
+
+case "$PROTOCOL" in
+  smtp|imap) ;;
+  *) echo "Error: invalid protocol '$PROTOCOL'. Allowed: smtp|imap" >&2; exit 1 ;;
+esac
+
+dc_file_for() {
+    # sanitize IP/CIDR into a safe filename (IPv6 colons and CIDR slash)
+    echo "$DC_DIR/$(echo "$1" | tr ':/' '__').conf"
+}
+
+ban_smtp() {
+    flock "$PF_TABLE" -c "
+        grep -qxF '$IP REJECT banned by fail2ban' '$PF_TABLE' ||
+        echo '$IP REJECT banned by fail2ban' >> '$PF_TABLE'
+    "
+    postfix reload
+    echo "ulaknode-ban: banned $IP (smtp)"
+}
+
+unban_smtp() {
+    flock "$PF_TABLE" -c "sed -i \"\\#^$IP #d\" '$PF_TABLE'"
+    postfix reload
+    echo "ulaknode-ban: unbanned $IP (smtp)"
+}
+
+ban_imap() {
+    local file
+    mkdir -p "$DC_DIR"
+    file="$(dc_file_for "$IP")"
+    cat > "$file" <<EOF
+remote $IP {
+  passdb static {
+    deny = yes
+  }
+}
+EOF
+    if ! doveconf -n >/dev/null 2>&1; then
+        echo "ulaknode-ban: dovecot config invalid after banning $IP, rolling back" >&2
+        rm -f "$file"
+        exit 1
+    fi
+    dovecot reload
+    echo "ulaknode-ban: banned $IP (imap)"
+}
+
+unban_imap() {
+    local file
+    file="$(dc_file_for "$IP")"
+    rm -f "$file"
+    dovecot reload
+    echo "ulaknode-ban: unbanned $IP (imap)"
+}
+
+case "$ACTION-$PROTOCOL" in
+  ban-smtp)   ban_smtp ;;
+  unban-smtp) unban_smtp ;;
+  ban-imap)   ban_imap ;;
+  unban-imap) unban_imap ;;
+esac

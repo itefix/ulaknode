@@ -1,0 +1,160 @@
+# ==============================
+# Basic Postfix configuration
+# ==============================
+
+compatibility_level = 3.9
+maillog_file = /var/log/mail.log
+myhostname = mail.example.com
+myorigin = $myhostname
+mydomain = example.com
+smtpd_banner = $myhostname ESMTP $mail_name (Debian)
+biff = no
+
+# Only localhost as local delivery (we handle everything via virtual)
+mydestination = localhost
+local_transport = error:local delivery disabled
+
+mynetworks = 127.0.0.0/8 [::1]/128
+relay_domains =
+relay_transport = relay
+default_transport = smtp
+relayhost = 
+
+# ==============================
+# Virtual domain setup
+# ==============================
+
+virtual_transport = lmtp:unix:private/dovecot-lmtp
+
+virtual_mailbox_domains = hash:/etc/postfix/virtual_domains
+virtual_mailbox_maps    = hash:/etc/postfix/virtual_mailboxes
+virtual_alias_maps      = hash:/etc/postfix/virtual_aliases
+
+# ==============================
+# SASL authentication (Dovecot)
+# ==============================
+
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_auth_enable = yes
+smtpd_sasl_security_options = noanonymous
+broken_sasl_auth_clients = yes
+smtpd_tls_auth_only = yes
+
+# ==============================
+# Access control / relaying
+# ==============================
+
+# fail2ban ban target — a plain-text cidr table, no postmap needed. Managed
+# by ulaknode-ban; see fail2ban/action.d/ulaknode.conf.
+smtpd_client_restrictions =
+    check_client_access cidr:/etc/postfix/fail2ban_clients
+
+smtpd_recipient_restrictions =
+    permit_mynetworks,
+    permit_sasl_authenticated,
+    reject_unauth_destination,
+    check_policy_service unix:private/policyd-spf,
+    check_policy_service inet:127.0.0.1:10023
+
+smtpd_relay_restrictions =
+    permit_sasl_authenticated,
+    permit_mynetworks,
+    reject_unauth_destination
+
+# ==============================
+# postscreen / DNSBL
+# ==============================
+# postscreen (see master.cf) filters connections before a real smtpd
+# process spawns. DNSBL lookups go through unbound (127.0.0.1) — a
+# resolver dedicated to just this mail server, not shared/forwarding —
+# because public DNSBLs like Spamhaus return their "blocked resolver"
+# answer to every query from a resolver they've classified as shared, and
+# that's indistinguishable from a real listing. See /etc/unbound.
+#
+# postscreen_access_list defaults to "permit_mynetworks", so mynetworks
+# traffic already skips these checks without needing to repeat it here.
+postscreen_dnsbl_sites = zen.spamhaus.org, bl.spamcop.net
+postscreen_dnsbl_threshold = 1
+postscreen_dnsbl_action = enforce
+
+# Clients that talk before the banner are bots — legitimate MTAs wait for
+# the 220 greeting. Postfix's default (ignore) only logs the failure.
+postscreen_greet_action = enforce
+
+# ==============================
+# TLS / SSL
+# ==============================
+
+smtpd_tls_cert_file = /etc/ssl/mail/fullchain.pem
+smtpd_tls_key_file  = /etc/ssl/mail/privkey.pem
+smtpd_tls_security_level = may
+smtpd_tls_loglevel = 1
+smtpd_tls_session_cache_database = btree:${data_directory}/smtpd_scache
+smtpd_tls_received_header = yes
+
+smtp_tls_security_level = may
+smtp_tls_loglevel = 1
+smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
+
+# ==============================
+# Milter integration (DKIM sign/verify, DMARC, spam)
+# ==============================
+# The smtp/submission services override smtpd_milters with their own list
+# below (see master.cf) — inbound gets the full chain, authenticated
+# submission only needs signing. This is just the fallback/default.
+
+milter_default_action = accept
+milter_protocol = 6
+smtpd_milters = unix:/run/opendkim/opendkim.sock
+non_smtpd_milters = unix:/run/opendkim/opendkim.sock
+
+# ==============================
+# TLS hardening
+# ==============================
+
+smtpd_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+smtpd_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+smtpd_tls_mandatory_ciphers = high
+smtpd_tls_ciphers = high
+tls_high_cipherlist = ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!eNULL:!MD5:!DSS:!RC4
+
+smtp_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+smtp_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
+smtp_tls_mandatory_ciphers = high
+smtp_tls_ciphers = high
+
+# ==============================
+# Message & connection limits
+# ==============================
+
+message_size_limit         = 52428800
+mailbox_size_limit         = 0
+virtual_mailbox_limit      = 0
+
+smtpd_client_connection_count_limit = 20
+smtpd_client_connection_rate_limit  = 60
+smtpd_client_message_rate_limit     = 100
+smtpd_client_recipient_rate_limit   = 200
+
+smtpd_error_sleep_time   = 1s
+smtpd_soft_error_limit   = 5
+smtpd_hard_error_limit   = 10
+
+default_process_limit    = 100
+smtpd_client_event_limit_exceptions = $mynetworks
+
+# ==============================
+# Performance & limits
+# ==============================
+
+maximal_queue_lifetime = 3d
+bounce_queue_lifetime  = 3d
+delay_warning_time     = 1h
+maximal_backoff_time   = 1h
+minimal_backoff_time   = 5m
+
+queue_directory = /var/spool/postfix
+data_directory  = /var/lib/postfix
+mail_owner      = postfix
+setgid_group    = postdrop

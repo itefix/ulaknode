@@ -1,0 +1,293 @@
+#!/bin/bash
+# ulaknode-mailbox — manage virtual mailboxes
+# Usage: ulaknode-mailbox <command> [options]
+#
+#   list      <domain>              — list all mailboxes for a domain
+#   add       <email> <password>    — add a mailbox
+#   remove    <email>               — remove a mailbox
+#   show      <email>               — show mailbox details
+#   passwd    <email> <newpassword> — change mailbox password
+#   quota-set <email> <limit>       — set quota (e.g. 500M, 2G, 0 = unlimited)
+#   quota     <email>               — show quota setting and live usage
+
+set -euo pipefail
+
+DOMAINS_FILE="/etc/postfix/virtual_domains"
+MAILBOXES_FILE="/etc/postfix/virtual_mailboxes"
+PASSWD_FILE="/etc/dovecot/passwd"
+
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-mailbox <list|add|remove|show|passwd|quota-set|quota> [args]" >&2
+    echo "" >&2
+    echo "  list      <domain>           list all mailboxes for a domain" >&2
+    echo "  add       <email> <password> create a mailbox" >&2
+    echo "  remove    <email>            delete a mailbox" >&2
+    echo "  show      <email>            show mailbox details" >&2
+    echo "  passwd    <email> <password> change mailbox password" >&2
+    echo "  quota-set <email> <limit>    set quota: 500M / 2G / 0 (unlimited)" >&2
+    echo "  quota     <email>            show quota limit and live disk usage" >&2
+    exit 1
+}
+
+validate_email() {
+    local addr="${1:-}"
+    if [[ -z "$addr" ]]; then
+        echo "Error: email address required." >&2
+        exit 1
+    fi
+    if [[ ! "$addr" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
+        echo "Error: invalid email address '$addr'." >&2
+        exit 1
+    fi
+}
+
+# Every email/domain value below ends up as a grep/sed *pattern*, not just a
+# plain string — an unescaped '.', '*', etc. in it changes what the pattern
+# matches, not just what it looks like. A crafted email like ".*@real-domain"
+# passes validate_email (one '@', well-formed domain) and then, unescaped,
+# matches every mailbox on that domain instead of just itself: `grep -v
+# "^.*@real-domain:"` in update_passwd_line would keep zero of that domain's
+# lines, silently deleting every mailbox on it in favor of one bogus entry.
+# This must run on every value before it reaches grep/sed, regardless of
+# what validate_email's charset currently allows.
+regex_escape() {
+    local s="$1" out="" c i
+    for (( i=0; i<${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            '.'|'*'|'['|']'|'^'|'$'|'\'|'/') out+="\\$c" ;;
+            *) out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# Parse human-friendly size to bytes. Accepts: 500M, 2G, 1024K, or plain integer.
+# Returns 0 unchanged (means unlimited).
+parse_quota() {
+    local raw="${1:-}"
+    if [[ -z "$raw" ]]; then
+        echo "Error: quota limit required (e.g. 500M, 2G, 0)." >&2
+        exit 1
+    fi
+    if [[ "$raw" =~ ^([0-9]+)([KMG]?)$ ]]; then
+        local num="${BASH_REMATCH[1]}"
+        local unit="${BASH_REMATCH[2]}"
+        case "$unit" in
+            K) echo $(( num * 1024 )) ;;
+            M) echo $(( num * 1024 * 1024 )) ;;
+            G) echo $(( num * 1024 * 1024 * 1024 )) ;;
+            *) echo "$num" ;;
+        esac
+    else
+        echo "Error: invalid quota '$raw'. Use e.g. 500M, 2G, 1024K, or 0." >&2
+        exit 1
+    fi
+}
+
+format_bytes() {
+    local bytes="$1"
+    if [[ "$bytes" -eq 0 ]]; then
+        echo "unlimited"
+    elif [[ "$bytes" -ge $(( 1024 * 1024 * 1024 )) ]]; then
+        awk "BEGIN {printf \"%.1f GB\", $bytes / (1024*1024*1024)}"
+    elif [[ "$bytes" -ge $(( 1024 * 1024 )) ]]; then
+        awk "BEGIN {printf \"%.1f MB\", $bytes / (1024*1024)}"
+    else
+        awk "BEGIN {printf \"%.1f KB\", $bytes / 1024}"
+    fi
+}
+
+domain_of() { echo "${1#*@}"; }
+user_of()   { echo "${1%@*}"; }
+
+mailbox_exists() {
+    grep -q "^$(regex_escape "$1"):" "$PASSWD_FILE" 2>/dev/null
+}
+
+domain_exists() {
+    grep -q "^$(regex_escape "$1")[[:space:]]" "$DOMAINS_FILE" 2>/dev/null
+}
+
+hash_password() {
+    local plain="$1"
+    if command -v doveadm &>/dev/null; then
+        doveadm pw -s SHA512-CRYPT -p "$plain"
+    else
+        openssl passwd -6 "$plain"
+    fi
+}
+
+# passwd file format: email:hash:uid:gid:gecos:home:shell:extra
+# extra = "quota_storage_size=N" or empty for unlimited
+make_passwd_line() {
+    local email="$1" hash="$2" quota_bytes="${3:-0}"
+    local extra=""
+    if [[ "$quota_bytes" -gt 0 ]]; then
+        extra="userdb_quota/user/storage_size=${quota_bytes}"
+    fi
+    echo "${email}:${hash}:5000:5000:::/bin/false:${extra}"
+}
+
+# Read field N (1-indexed) from the passwd line for a given email
+get_passwd_field() {
+    local email="$1" field="$2"
+    grep "^$(regex_escape "$email"):" "$PASSWD_FILE" 2>/dev/null \
+        | cut -d: -f"$field"
+}
+
+# Read field 8 onwards (extra userdb fields, colon-delimited)
+get_passwd_extra() {
+    local email="$1"
+    grep "^$(regex_escape "$email"):" "$PASSWD_FILE" 2>/dev/null \
+        | cut -d: -f8-
+}
+
+get_quota_bytes() {
+    local extra
+    extra=$(get_passwd_extra "$1")
+    if [[ "$extra" =~ quota/user/storage_size=([0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "0"
+    fi
+}
+
+# Atomically replace a passwd line
+update_passwd_line() {
+    local email="$1" new_line="$2"
+    local tmp="${PASSWD_FILE}.tmp.$$"
+    grep -v "^$(regex_escape "$email"):" "$PASSWD_FILE" > "$tmp" || true
+    echo "$new_line" >> "$tmp"
+    mv "$tmp" "$PASSWD_FILE"
+}
+
+case "$CMD" in
+  list)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    echo "Mailboxes for $DOMAIN:"
+    while IFS=' ' read -r email _rest; do
+        quota_bytes=$(get_quota_bytes "$email")
+        quota_label=$(format_bytes "$quota_bytes")
+        maildir="/var/mail/$(domain_of "$email")/$(user_of "$email")"
+        printf "  %-30s  quota: %-12s  %s\n" "$email" "$quota_label" "$maildir"
+    done < <(grep "^[^@]*@$(regex_escape "$DOMAIN")[[:space:]]" "$MAILBOXES_FILE" 2>/dev/null || true)
+    ;;
+
+  add)
+    EMAIL="${2:-}"
+    PASS="${3:-}"
+    validate_email "$EMAIL"
+    if [[ -z "$PASS" ]]; then
+        echo "Error: password required." >&2
+        usage
+    fi
+    DOMAIN=$(domain_of "$EMAIL")
+    if ! domain_exists "$DOMAIN"; then
+        echo "Error: domain '$DOMAIN' not found. Add it first with ulaknode-domain add $DOMAIN" >&2
+        exit 1
+    fi
+    if mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' already exists." >&2
+        exit 1
+    fi
+    MAILDIR="/var/mail/${DOMAIN}/$(user_of "$EMAIL")"
+    HASHED=$(hash_password "$PASS")
+    echo "$EMAIL  ${DOMAIN}/$(user_of "$EMAIL")/" >> "$MAILBOXES_FILE"
+    postmap "$MAILBOXES_FILE"
+    make_passwd_line "$EMAIL" "$HASHED" 0 >> "$PASSWD_FILE"
+    echo "Added mailbox: $EMAIL"
+    echo "  Maildir: $MAILDIR"
+    echo "  Quota:   unlimited (use quota-set to apply a limit)"
+    ;;
+
+  remove)
+    EMAIL="${2:-}"
+    validate_email "$EMAIL"
+    if ! mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' not found." >&2
+        exit 1
+    fi
+    sed -i "/^$(regex_escape "$EMAIL")[[:space:]]/d" "$MAILBOXES_FILE"
+    postmap "$MAILBOXES_FILE"
+    sed -i "/^$(regex_escape "$EMAIL"):/d" "$PASSWD_FILE"
+    echo "Removed mailbox: $EMAIL"
+    echo "  Note: mail data at /var/mail/$(domain_of "$EMAIL")/$(user_of "$EMAIL") was not deleted from disk."
+    ;;
+
+  show)
+    EMAIL="${2:-}"
+    validate_email "$EMAIL"
+    if ! mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' not found." >&2
+        exit 1
+    fi
+    quota_bytes=$(get_quota_bytes "$EMAIL")
+    maildir="/var/mail/$(domain_of "$EMAIL")/$(user_of "$EMAIL")"
+    printf "Email:   %s\nMaildir: %s\nQuota:   %s\n" \
+        "$EMAIL" "$maildir" "$(format_bytes "$quota_bytes")"
+    ;;
+
+  passwd)
+    EMAIL="${2:-}"
+    PASS="${3:-}"
+    validate_email "$EMAIL"
+    if [[ -z "$PASS" ]]; then
+        echo "Error: new password required." >&2
+        usage
+    fi
+    if ! mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' not found." >&2
+        exit 1
+    fi
+    HASHED=$(hash_password "$PASS")
+    quota_bytes=$(get_quota_bytes "$EMAIL")
+    update_passwd_line "$EMAIL" "$(make_passwd_line "$EMAIL" "$HASHED" "$quota_bytes")"
+    echo "Password updated for: $EMAIL"
+    ;;
+
+  quota-set)
+    EMAIL="${2:-}"
+    validate_email "$EMAIL"
+    BYTES=$(parse_quota "${3:-}")
+    if ! mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' not found." >&2
+        exit 1
+    fi
+    HASHED=$(get_passwd_field "$EMAIL" 2)
+    update_passwd_line "$EMAIL" "$(make_passwd_line "$EMAIL" "$HASHED" "$BYTES")"
+    echo "Quota updated for: $EMAIL  ->  $(format_bytes "$BYTES")"
+    ;;
+
+  quota)
+    EMAIL="${2:-}"
+    validate_email "$EMAIL"
+    if ! mailbox_exists "$EMAIL"; then
+        echo "Error: mailbox '$EMAIL' not found." >&2
+        exit 1
+    fi
+    quota_bytes=$(get_quota_bytes "$EMAIL")
+    printf "Quota limit: %s\n" "$(format_bytes "$quota_bytes")"
+    if command -v doveadm &>/dev/null; then
+        doveadm quota get -u "$EMAIL" 2>/dev/null || echo "  (could not fetch live usage via doveadm)"
+    else
+        maildir="/var/mail/$(domain_of "$EMAIL")/$(user_of "$EMAIL")"
+        if [[ -d "$maildir" ]]; then
+            USED=$(du -sb "$maildir" 2>/dev/null | awk '{print $1}')
+            printf "Disk usage:  %s\n" "$(format_bytes "$USED")"
+        else
+            echo "Disk usage:  (maildir not found on disk)"
+        fi
+    fi
+    ;;
+
+  *)
+    usage
+    ;;
+esac

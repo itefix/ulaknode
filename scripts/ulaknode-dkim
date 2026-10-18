@@ -1,0 +1,177 @@
+#!/bin/bash
+# ulaknode-dkim — manage DKIM signing keys for OpenDKIM
+# Usage: ulaknode-dkim <command> [args]
+#
+#   generate <domain> [selector]  — generate a 2048-bit RSA key pair (default selector: mail)
+#   list                          — list all configured domain/selector pairs
+#   show     <domain> [selector]  — print the DNS TXT record to publish
+#   remove   <domain> <selector>  — delete a key and remove it from OpenDKIM config
+
+set -euo pipefail
+
+KEY_DIR="/etc/opendkim/keys"
+KEY_TABLE="/etc/opendkim/KeyTable"
+SIGNING_TABLE="/etc/opendkim/SigningTable"
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-dkim <generate|list|show|remove> [args]" >&2
+    echo "" >&2
+    echo "  generate <domain> [selector]  generate key pair (default selector: mail)" >&2
+    echo "  list                          list all domain/selector pairs" >&2
+    echo "  show     <domain> [selector]  print DNS TXT record to publish" >&2
+    echo "  remove   <domain> <selector>  delete key and deregister from OpenDKIM" >&2
+    echo "" >&2
+    echo "After generate or remove, reload opendkim:" >&2
+    echo "  ulaknode-service reload opendkim" >&2
+    exit 1
+}
+
+# Rebuild KeyTable/SigningTable from all keys on disk
+regenerate_tables() {
+    local key_tmp sign_tmp
+    key_tmp=$(mktemp)
+    sign_tmp=$(mktemp)
+
+    : > "$key_tmp"
+    : > "$sign_tmp"
+
+    local found=0
+    for domain_dir in "$KEY_DIR"/*/; do
+        [[ -d "$domain_dir" ]] || continue
+        local domain
+        domain=$(basename "$domain_dir")
+
+        for keyfile in "$domain_dir"*.private; do
+            [[ -f "$keyfile" ]] || continue
+            local selector
+            selector=$(basename "$keyfile" .private)
+            echo "${selector}._domainkey.${domain} ${domain}:${selector}:${keyfile}" >> "$key_tmp"
+            echo "*@${domain} ${selector}._domainkey.${domain}" >> "$sign_tmp"
+            found=1
+        done
+    done
+
+    install -o root -g root -m 644 "$key_tmp" "$KEY_TABLE"
+    install -o root -g root -m 644 "$sign_tmp" "$SIGNING_TABLE"
+    rm -f "$key_tmp" "$sign_tmp"
+
+    if [[ $found -eq 0 ]]; then
+        echo "  (no keys registered)"
+    fi
+}
+
+dns_record() {
+    local domain="$1" selector="$2"
+    local txtfile="$KEY_DIR/$domain/$selector.txt"
+    if [[ ! -f "$txtfile" ]]; then
+        echo "Error: no DNS record file found for $domain / $selector." >&2
+        exit 1
+    fi
+    cat "$txtfile"
+}
+
+case "$CMD" in
+  generate)
+    DOMAIN="${2:-}"
+    SELECTOR="${3:-mail}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+
+    KEY_SUBDIR="$KEY_DIR/$DOMAIN"
+    KEYFILE="$KEY_SUBDIR/$SELECTOR.private"
+
+    if [[ -f "$KEYFILE" ]]; then
+        echo "Error: key already exists for $DOMAIN / $SELECTOR." >&2
+        echo "  Remove it first: ulaknode-dkim remove $DOMAIN $SELECTOR" >&2
+        exit 1
+    fi
+
+    mkdir -p "$KEY_SUBDIR"
+    chown opendkim:opendkim "$KEY_SUBDIR"
+    chmod 750 "$KEY_SUBDIR"
+
+    opendkim-genkey -D "$KEY_SUBDIR" -d "$DOMAIN" -s "$SELECTOR" -b 2048
+    chown opendkim:opendkim "$KEY_SUBDIR/$SELECTOR.private" "$KEY_SUBDIR/$SELECTOR.txt"
+    chmod 640 "$KEY_SUBDIR/$SELECTOR.private"
+    chmod 644 "$KEY_SUBDIR/$SELECTOR.txt"
+
+    regenerate_tables
+
+    echo "Generated DKIM key: $DOMAIN / selector=$SELECTOR"
+    echo ""
+    echo "Publish this DNS TXT record:"
+    dns_record "$DOMAIN" "$SELECTOR"
+    echo ""
+    echo "Then reload opendkim: ulaknode-service reload opendkim"
+    ;;
+
+  list)
+    echo "DKIM keys:"
+    found=0
+    for domain_dir in "$KEY_DIR"/*/; do
+        [[ -d "$domain_dir" ]] || continue
+        domain=$(basename "$domain_dir")
+        for keyfile in "$domain_dir"*.private; do
+            [[ -f "$keyfile" ]] || continue
+            selector=$(basename "$keyfile" .private)
+            printf "  %-30s  selector=%s\n" "$domain" "$selector"
+            found=1
+        done
+    done
+    if [[ $found -eq 0 ]]; then
+        echo "  (none)"
+    fi
+    ;;
+
+  show)
+    DOMAIN="${2:-}"
+    SELECTOR="${3:-mail}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    if [[ ! -f "$KEY_DIR/$DOMAIN/$SELECTOR.private" ]]; then
+        echo "Error: no key found for $DOMAIN / $SELECTOR." >&2
+        exit 1
+    fi
+    echo "DNS TXT record for $DOMAIN (selector: $SELECTOR):"
+    echo ""
+    dns_record "$DOMAIN" "$SELECTOR"
+    echo ""
+    echo "Record name:  ${SELECTOR}._domainkey.${DOMAIN}"
+    ;;
+
+  remove)
+    DOMAIN="${2:-}"
+    SELECTOR="${3:-}"
+    if [[ -z "$DOMAIN" || -z "$SELECTOR" ]]; then
+        echo "Error: domain and selector are both required." >&2
+        usage
+    fi
+    KEYFILE="$KEY_DIR/$DOMAIN/$SELECTOR.private"
+    if [[ ! -f "$KEYFILE" ]]; then
+        echo "Error: no key found for $DOMAIN / $SELECTOR." >&2
+        exit 1
+    fi
+    rm -f "$KEYFILE" "$KEY_DIR/$DOMAIN/$SELECTOR.txt"
+    # Remove domain dir if empty
+    rmdir --ignore-fail-on-non-empty "$KEY_DIR/$DOMAIN"
+    regenerate_tables
+    echo "Removed DKIM key: $DOMAIN / selector=$SELECTOR"
+    echo "Remember to remove the DNS TXT record: ${SELECTOR}._domainkey.${DOMAIN}"
+    echo "Then reload opendkim: ulaknode-service reload opendkim"
+    ;;
+
+  -h|--help|"")
+    usage
+    ;;
+
+  *)
+    echo "Error: unknown command '$CMD'." >&2
+    echo "Run 'ulaknode-dkim --help' for usage." >&2
+    exit 1
+    ;;
+esac

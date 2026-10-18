@@ -1,0 +1,5 @@
+# Hosts/networks treated as internal by OpenDKIM (their outbound mail is
+# signed rather than just verified). Mirrors Postfix's mynetworks.
+127.0.0.1
+::1
+localhost

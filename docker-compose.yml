@@ -1,0 +1,49 @@
+services:
+  ulaknode:
+    image: ghcr.io/itefix/ulaknode:latest
+    container_name: ulaknode
+    hostname: ${MAIL_HOSTNAME:-mail.example.com}
+    restart: unless-stopped
+    environment:
+      - MAIL_HOSTNAME=${MAIL_HOSTNAME:-mail.example.com}
+      - MAIL_DOMAIN=${MAIL_DOMAIN:-}
+      # Shared secret for ulaknode-agent (the tiny mailbox-management RPC a
+      # sidecar admin UI like ulaknode-web talks to on port 8787) — only
+      # needed if you're running that sidecar; leave unset otherwise.
+      # ulaknode-agent rejects every request with this unset, so if you do
+      # use a sidecar, set it here and to the identical value on its side.
+      # Generate with e.g. `openssl rand -hex 32`.
+      - ULAKNODE_AGENT_TOKEN=${ULAKNODE_AGENT_TOKEN:-}
+    ports:
+      - "25:25"
+      - "587:587"
+      - "993:993"
+    volumes:
+      - ulak_mail:/var/mail
+      - ulak_logs:/var/log
+      - ulak_postfix:/etc/postfix
+      - ulak_dovecot:/etc/dovecot
+      - ulak_opendkim:/etc/opendkim
+      - ulak_opendmarc:/etc/opendmarc
+      - ulak_spamassassin:/etc/spamassassin
+      - ulak_policyd_spf:/etc/postfix-policyd-spf-python
+      - ulak_postgrey:/etc/postgrey
+      - ulak_fail2ban:/etc/fail2ban
+      - ulak_unbound:/etc/unbound
+      - ulak_certs:/etc/ssl/mail
+      - /etc/letsencrypt/live/mail.yourdomain.com/fullchain.pem:/run/certs/fullchain.pem:ro
+      - /etc/letsencrypt/live/mail.yourdomain.com/privkey.pem:/run/certs/privkey.pem:ro
+
+volumes:
+  ulak_mail:
+  ulak_logs:
+  ulak_postfix:
+  ulak_dovecot:
+  ulak_opendkim:
+  ulak_opendmarc:
+  ulak_spamassassin:
+  ulak_policyd_spf:
+  ulak_postgrey:
+  ulak_fail2ban:
+  ulak_unbound:
+  ulak_certs:

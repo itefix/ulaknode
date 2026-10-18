@@ -1,0 +1,88 @@
+# Postfix master process configuration file
+
+# Postfix logging service (required by Postfix 3.9+)
+postlog   unix-dgram n  -       n       -       1       postlogd
+
+# SMTP service (port 25) - postscreen triages every connection before a
+# real smtpd process ever spawns: DNSBL lookups (postscreen_dnsbl_sites,
+# see main.cf) via the dnsblog helper below, plus built-in tests like the
+# pre-greet check. DNSBL lookups go through unbound (127.0.0.1) — see
+# /etc/unbound and docs/self-hosted.md for why a dedicated resolver matters
+# here. Connections that pass are handed off to the real smtpd service.
+smtp      inet  n       -       n       -       1       postscreen
+
+# Real smtpd for connections postscreen has already cleared. "pass" means
+# postfix hands off the already-open connection instead of spawning a new
+# listener; all the options that used to live on the smtp/postscreen line
+# above belong here now.
+smtpd     pass  -       -       n       -       -       smtpd
+  -o smtpd_tls_security_level=may
+  -o smtpd_sasl_type=dovecot
+  -o smtpd_sasl_path=private/auth
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_relay_restrictions=permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination
+  -o smtpd_tls_cert_file=/etc/ssl/mail/fullchain.pem
+  -o smtpd_tls_key_file=/etc/ssl/mail/privkey.pem
+  -o smtpd_tls_loglevel=1
+  -o smtpd_tls_received_header=yes
+  -o smtpd_tls_session_cache_database=btree:${data_directory}/smtpd_scache
+  -o milter_macro_daemon_name=ORIGINATING
+  -o smtpd_milters=unix:/run/opendkim/opendkim.sock,unix:/run/opendmarc/opendmarc.sock,unix:/run/spamass-milter/spamass-milter.sock
+
+# postscreen helpers — dnsblog performs the DNSBL lookups asynchronously
+# and reports back; tlsproxy is only exercised if postscreen_tls_security_level
+# ever gets configured (it isn't, today), kept here so that's a config-only
+# change later instead of also needing a master.cf edit.
+dnsblog   unix  -       -       n       -       0       dnsblog
+tlsproxy  unix  -       -       n       -       0       tlsproxy
+
+# Submission service (port 587) - for authenticated clients
+submission inet n       -       n       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_sasl_type=dovecot
+  -o smtpd_sasl_path=private/auth
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_tls_cert_file=/etc/ssl/mail/fullchain.pem
+  -o smtpd_tls_key_file=/etc/ssl/mail/privkey.pem
+  -o milter_macro_daemon_name=ORIGINATING
+  -o smtpd_milters=unix:/run/opendkim/opendkim.sock
+
+# TLS session cache manager (required for TLS support)
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
+
+# Local pickup and queue management
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       n       -       -       smtp
+relay     unix  -       -       n       -       -       smtp
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+showq     unix  n       -       n       -       -       showq
+
+# error/retry — required by local_transport = error:... in main.cf
+error     unix  -       -       n       -       -       error
+retry     unix  -       -       n       -       -       error
+
+# Virtual delivery via Dovecot LMTP
+lmtp      unix  -       -       n       -       -       lmtp
+  -o lmtp_data_done_timeout=1200
+  -o lmtp_send_xforward_command=yes
+  -o lmtp_tls_security_level=none
+
+# SPF policy service — spawned per connection, checked via
+# check_policy_service in smtpd_recipient_restrictions (main.cf)
+policyd-spf unix -      n       n       -       0       spawn
+  user=nobody argv=/usr/bin/policyd-spf
+

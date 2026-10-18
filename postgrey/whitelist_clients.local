@@ -1,0 +1,20 @@
+# Clients (by rDNS hostname suffix, IP, or CIDR) to always allow through
+# greylisting immediately. One entry per line; see postgrey-whitelist-clients(5).
+#
+# This is the .local companion of /etc/postgrey/whitelist_clients — the
+# large list maintained by the postgrey Debian package. Postgrey reads both;
+# put your own additions here so package upgrades never touch them.
+#
+# Ulaknode additions: transactional ESPs that carry one-time codes and
+# password-reset mail, where a greylisting delay hurts most. Entries match
+# the connecting client's reverse-DNS name suffix.
+amazonses.com
+sendgrid.net
+mailgun.org
+mailgun.net
+sparkpostmail.com
+mtasv.net
+protection.outlook.com
+mandrillapp.com
+mcsv.net
+rsgsv.net

@@ -1,0 +1,34 @@
+#!/bin/bash
+# Fix permissions on config files that services need to read
+
+# Postfix — files must not be group/world writable
+chmod -R go-w /etc/postfix/
+
+# Dovecot passwd — readable by dovecot group only
+PASSWD="/etc/dovecot/passwd"
+if [[ -f "$PASSWD" ]]; then
+    chown root:dovecot "$PASSWD"
+    chmod 640 "$PASSWD"
+fi
+
+# Mail storage — writable by virtual mail user (uid/gid 5000)
+chown 5000:5000 /var/mail
+chmod 755 /var/mail
+
+# DKIM keys — owned by opendkim
+DKIM_DIR="/etc/opendkim/keys"
+if [[ -d "$DKIM_DIR" ]]; then
+    chown -R opendkim:opendkim "$DKIM_DIR"
+    find "$DKIM_DIR" -type d -exec chmod 750 {} \;
+    find "$DKIM_DIR" -type f -name '*.private' -exec chmod 640 {} \;
+    find "$DKIM_DIR" -type f -name '*.txt' -exec chmod 644 {} \;
+fi
+
+# Certs — readable by mail services
+CERT_DIR="/etc/ssl/mail"
+if [[ -d "$CERT_DIR" ]]; then
+    chown root:root "$CERT_DIR"
+    chmod 755 "$CERT_DIR"
+    chmod 644 "$CERT_DIR/fullchain.pem" 2>/dev/null || true
+    chmod 640 "$CERT_DIR/privkey.pem"   2>/dev/null || true
+fi

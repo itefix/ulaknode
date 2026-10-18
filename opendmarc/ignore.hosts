@@ -1,0 +1,4 @@
+# Hosts/networks OpenDMARC should not evaluate (mirrors Postfix's mynetworks)
+127.0.0.1
+::1
+localhost

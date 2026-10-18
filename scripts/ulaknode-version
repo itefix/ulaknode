@@ -1,0 +1,49 @@
+#!/bin/bash
+# ulaknode-version — show versions of all ulaknode components
+
+ULAKNODE_VERSION="${ULAKNODE_VERSION:-unknown}"
+
+fmt() {
+    printf "  %-20s %s\n" "$1" "$2"
+}
+
+echo "ulaknode $ULAKNODE_VERSION"
+echo ""
+echo "Components:"
+
+# Postfix
+POSTFIX=$(postconf mail_version 2>/dev/null | awk '{print $3}')
+fmt "postfix" "${POSTFIX:-unknown}"
+
+# Dovecot
+DOVECOT=$(dovecot --version 2>/dev/null | awk '{print $1}')
+fmt "dovecot" "${DOVECOT:-unknown}"
+
+# OpenDKIM
+OPENDKIM=$(opendkim -V 2>/dev/null | head -1 | awk '{print $4}')
+OPENDKIM="${OPENDKIM#v}"
+fmt "opendkim" "${OPENDKIM:-unknown}"
+
+# OpenDMARC
+OPENDMARC=$(dpkg-query -W -f='${Version}' opendmarc 2>/dev/null)
+fmt "opendmarc" "${OPENDMARC:-unknown}"
+
+# SpamAssassin
+SPAMASSASSIN=$(spamd --version 2>/dev/null | head -1 | awk '{print $4}')
+fmt "spamassassin" "${SPAMASSASSIN:-unknown}"
+
+# Postgrey
+POSTGREY=$(dpkg-query -W -f='${Version}' postgrey 2>/dev/null)
+fmt "postgrey" "${POSTGREY:-unknown}"
+
+# OpenSSL
+OPENSSL=$(openssl version 2>/dev/null | awk '{print $2}')
+fmt "openssl" "${OPENSSL:-unknown}"
+
+# OS
+OS=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")
+echo ""
+echo "Platform:"
+fmt "os" "${OS:-unknown}"
+fmt "kernel" "$(uname -r)"
+fmt "arch" "$(uname -m)"

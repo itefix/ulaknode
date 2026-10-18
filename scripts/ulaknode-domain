@@ -1,0 +1,112 @@
+#!/bin/bash
+# ulaknode-domain — manage virtual mail domains
+# Usage: ulaknode-domain <list|add|remove|show> [domain]
+
+set -euo pipefail
+
+DOMAINS_FILE="/etc/postfix/virtual_domains"
+MAILBOXES_FILE="/etc/postfix/virtual_mailboxes"
+ALIASES_FILE="/etc/postfix/virtual_aliases"
+PASSWD_FILE="/etc/dovecot/passwd"
+
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-domain <list|add|remove|show> [domain]" >&2
+    exit 1
+}
+
+require_domain() {
+    local domain="${1:-}"
+    if [[ -z "$domain" ]]; then
+        echo "Error: domain name required." >&2
+        usage
+    fi
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
+        echo "Error: invalid domain name '$domain'." >&2
+        exit 1
+    fi
+}
+
+# See ulaknode-mailbox's regex_escape for why this matters: domain values
+# below become grep/sed *patterns*, and an unescaped literal '.' in e.g.
+# "example.com" is a live regex wildcard, not just a character to match.
+# require_domain's charset excludes '*'/'['/etc, so this is lower-severity
+# than ulaknode-mailbox's case (no unbounded-wildcard cross-domain match),
+# but the same fix applies for the same reason.
+regex_escape() {
+    local s="$1" out="" c i
+    for (( i=0; i<${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            '.'|'*'|'['|']'|'^'|'$'|'\'|'/') out+="\\$c" ;;
+            *) out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+domain_exists() {
+    grep -q "^$(regex_escape "$1")[[:space:]]" "$DOMAINS_FILE" 2>/dev/null
+}
+
+case "$CMD" in
+  list)
+    echo "Virtual domains:"
+    if [[ -s "$DOMAINS_FILE" ]]; then
+        awk '{printf "  %s\n", $1}' "$DOMAINS_FILE" | sort
+    fi
+    ;;
+
+  add)
+    require_domain "${2:-}"
+    DOMAIN="$2"
+    if domain_exists "$DOMAIN"; then
+        echo "Error: domain '$DOMAIN' already exists." >&2
+        exit 1
+    fi
+    echo "$DOMAIN  OK" >> "$DOMAINS_FILE"
+    postmap "$DOMAINS_FILE"
+    echo "Added domain: $DOMAIN"
+    ;;
+
+  remove)
+    require_domain "${2:-}"
+    DOMAIN="$2"
+    if ! domain_exists "$DOMAIN"; then
+        echo "Error: domain '$DOMAIN' not found." >&2
+        exit 1
+    fi
+    ESCAPED_DOMAIN="$(regex_escape "$DOMAIN")"
+    sed -i "/^${ESCAPED_DOMAIN}[[:space:]]/d" "$DOMAINS_FILE"
+    postmap "$DOMAINS_FILE"
+    sed -i "/^[^@]*@${ESCAPED_DOMAIN}[[:space:]]/d" "$MAILBOXES_FILE"
+    postmap "$MAILBOXES_FILE"
+    sed -i "/^[^@]*@${ESCAPED_DOMAIN}[[:space:]]/d" "$ALIASES_FILE"
+    postmap "$ALIASES_FILE"
+    sed -i "/^[^@]*@${ESCAPED_DOMAIN}:/d" "$PASSWD_FILE"
+    echo "Removed domain and all associated users/aliases: $DOMAIN"
+    ;;
+
+  show)
+    require_domain "${2:-}"
+    DOMAIN="$2"
+    if ! domain_exists "$DOMAIN"; then
+        echo "Error: domain '$DOMAIN' not found." >&2
+        exit 1
+    fi
+    echo "Domain: $DOMAIN"
+    echo ""
+    echo "Users:"
+    grep "^[^@]*@$(regex_escape "$DOMAIN")[[:space:]]" "$MAILBOXES_FILE" 2>/dev/null \
+        | awk '{printf "  %s\n", $1}' || true
+    echo ""
+    echo "Aliases:"
+    grep "^[^@]*@$(regex_escape "$DOMAIN")[[:space:]]" "$ALIASES_FILE" 2>/dev/null \
+        | awk '{printf "  %s  ->  %s\n", $1, $2}' || true
+    ;;
+
+  *)
+    usage
+    ;;
+esac

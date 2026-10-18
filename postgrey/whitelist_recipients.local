@@ -1,0 +1,7 @@
+# Recipients that should never be greylisted (e.g. role addresses expecting
+# time-sensitive mail). One entry per line; see postgrey-whitelist-recipients(5).
+#
+# This is the .local companion of /etc/postgrey/whitelist_recipients (from
+# the postgrey Debian package, which already exempts postmaster@ and abuse@).
+# Postgrey reads both; put your own additions here so package upgrades never
+# touch them.

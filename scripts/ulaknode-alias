@@ -1,0 +1,104 @@
+#!/bin/bash
+# ulaknode-alias — manage virtual mail aliases
+# Usage: ulaknode-alias <command> [options]
+#
+#   list   <domain>              — list all aliases for a domain
+#   add    <source> <dest>       — add an alias (both are full email addresses)
+#   remove <source>              — remove all aliases for a source address
+#   show   <source>              — show destination(s) for a source address
+
+set -euo pipefail
+
+DOMAINS_FILE="/etc/postfix/virtual_domains"
+ALIASES_FILE="/etc/postfix/virtual_aliases"
+
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-alias <list|add|remove|show> [args]" >&2
+    echo "" >&2
+    echo "  list   <domain>        list all aliases for a domain" >&2
+    echo "  add    <source> <dest> add alias: source -> dest" >&2
+    echo "  remove <source>        remove alias by source address" >&2
+    echo "  show   <source>        show destination(s) for source" >&2
+    exit 1
+}
+
+validate_email() {
+    local addr="${1:-}"
+    if [[ -z "$addr" ]]; then
+        echo "Error: email address required." >&2
+        exit 1
+    fi
+    if [[ ! "$addr" =~ ^[^@]+@[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$ ]]; then
+        echo "Error: invalid email address '$addr'." >&2
+        exit 1
+    fi
+}
+
+domain_of() { echo "${1#*@}"; }
+
+domain_exists() {
+    grep -q "^${1}[[:space:]]" "$DOMAINS_FILE" 2>/dev/null
+}
+
+case "$CMD" in
+  list)
+    DOMAIN="${2:-}"
+    if [[ -z "$DOMAIN" ]]; then
+        echo "Error: domain required." >&2
+        usage
+    fi
+    echo "Aliases for $DOMAIN:"
+    grep "^[^@]*@${DOMAIN}[[:space:]]" "$ALIASES_FILE" 2>/dev/null \
+        | awk '{printf "  %s  ->  %s\n", $1, $2}' || true
+    ;;
+
+  add)
+    SOURCE="${2:-}"
+    DEST="${3:-}"
+    validate_email "$SOURCE"
+    validate_email "$DEST"
+    DOMAIN=$(domain_of "$SOURCE")
+    if ! domain_exists "$DOMAIN"; then
+        echo "Error: domain '$DOMAIN' not found. Add it first with ulaknode-domain add $DOMAIN" >&2
+        exit 1
+    fi
+    if grep -q "^${SOURCE}[[:space:]].*${DEST}" "$ALIASES_FILE" 2>/dev/null; then
+        echo "Error: alias '$SOURCE -> $DEST' already exists." >&2
+        exit 1
+    fi
+    echo "$SOURCE  $DEST" >> "$ALIASES_FILE"
+    postmap "$ALIASES_FILE"
+    echo "Added alias: $SOURCE -> $DEST"
+    ;;
+
+  remove)
+    SOURCE="${2:-}"
+    validate_email "$SOURCE"
+    COUNT=$(grep -c "^${SOURCE}[[:space:]]" "$ALIASES_FILE" 2>/dev/null || true)
+    if [[ "$COUNT" -eq 0 ]]; then
+        echo "Error: no alias found for source '$SOURCE'." >&2
+        exit 1
+    fi
+    sed -i "/^${SOURCE}[[:space:]]/d" "$ALIASES_FILE"
+    postmap "$ALIASES_FILE"
+    echo "Removed $COUNT alias(es) for: $SOURCE"
+    ;;
+
+  show)
+    SOURCE="${2:-}"
+    validate_email "$SOURCE"
+    ROWS=$(grep "^${SOURCE}[[:space:]]" "$ALIASES_FILE" 2>/dev/null | awk '{print $2}' || true)
+    if [[ -z "$ROWS" ]]; then
+        echo "No aliases found for: $SOURCE" >&2
+        exit 1
+    fi
+    echo "Aliases for $SOURCE:"
+    echo "$ROWS" | awk '{printf "  -> %s\n", $0}'
+    ;;
+
+  *)
+    usage
+    ;;
+esac

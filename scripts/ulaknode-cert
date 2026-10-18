@@ -1,0 +1,127 @@
+#!/bin/bash
+# ulaknode-cert — manage the shared TLS certificate for Postfix and Dovecot
+# Usage: ulaknode-cert <command> [args]
+#
+#   install <fullchain> <privkey>  — install a certificate and key
+#   show                           — display current certificate details
+#   check                          — verify cert and key match, and expiry
+
+set -euo pipefail
+
+CERT_DIR="/etc/ssl/mail"
+CERT="$CERT_DIR/fullchain.pem"
+KEY="$CERT_DIR/privkey.pem"
+CMD="${1:-}"
+
+usage() {
+    echo "Usage: ulaknode-cert <install|show|check> [args]" >&2
+    echo "" >&2
+    echo "Commands:" >&2
+    echo "  install <fullchain> <privkey>  install cert and key from given paths" >&2
+    echo "  show                           display subject, issuer, and validity dates" >&2
+    echo "  check                          verify cert/key match and check expiry" >&2
+    echo "" >&2
+    echo "Certificate location: $CERT_DIR" >&2
+    echo "  fullchain.pem — certificate (+ intermediates)" >&2
+    echo "  privkey.pem   — private key" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  ulaknode-cert install /tmp/fullchain.pem /tmp/privkey.pem" >&2
+    echo "  ulaknode-cert show" >&2
+    echo "  ulaknode-cert check" >&2
+    exit 1
+}
+
+require_cert() {
+    if [[ ! -f "$CERT" || ! -f "$KEY" ]]; then
+        echo "Error: no certificate installed. Run 'ulaknode-cert install' first." >&2
+        exit 1
+    fi
+}
+
+case "$CMD" in
+  install)
+    SRC_CERT="${2:-}"
+    SRC_KEY="${3:-}"
+    if [[ -z "$SRC_CERT" || -z "$SRC_KEY" ]]; then
+        echo "Error: both fullchain and privkey paths are required." >&2
+        usage
+    fi
+    if [[ ! -f "$SRC_CERT" ]]; then
+        echo "Error: certificate file not found: $SRC_CERT" >&2
+        exit 1
+    fi
+    if [[ ! -f "$SRC_KEY" ]]; then
+        echo "Error: key file not found: $SRC_KEY" >&2
+        exit 1
+    fi
+
+    # Verify the pair matches before installing (works for both RSA and ECDSA)
+    CERT_PUB=$(openssl x509 -noout -pubkey -in "$SRC_CERT" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | openssl md5)
+    KEY_PUB=$(openssl pkey -pubout -outform DER -in "$SRC_KEY" 2>/dev/null | openssl md5)
+    if [[ "$CERT_PUB" != "$KEY_PUB" ]]; then
+        echo "Error: certificate and private key do not match." >&2
+        exit 1
+    fi
+
+    mkdir -p "$CERT_DIR"
+    install -o root -g root -m 644 "$SRC_CERT" "$CERT"
+    install -o root -g root -m 640 "$SRC_KEY"  "$KEY"
+
+    echo "Certificate installed to $CERT_DIR"
+    openssl x509 -noout -subject -issuer -dates -in "$CERT"
+    echo ""
+    echo "Restart services to apply: ulaknode-service restart postfix && ulaknode-service restart dovecot"
+    ;;
+
+  show)
+    require_cert
+    echo "Certificate: $CERT"
+    openssl x509 -noout -subject -issuer -dates -in "$CERT"
+    echo ""
+    # Show SANs if present
+    SANS=$(openssl x509 -noout -ext subjectAltName -in "$CERT" 2>/dev/null | grep -v "Subject Alternative Name" | tr -d ' ' || true)
+    if [[ -n "$SANS" ]]; then
+        echo "SANs: $SANS"
+    fi
+    ;;
+
+  check)
+    require_cert
+
+    # Cert/key match (works for both RSA and ECDSA)
+    CERT_PUB=$(openssl x509 -noout -pubkey -in "$CERT" 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | openssl md5)
+    KEY_PUB=$(openssl pkey -pubout -outform DER -in "$KEY" 2>/dev/null | openssl md5)
+    if [[ "$CERT_PUB" == "$KEY_PUB" ]]; then
+        echo "[OK] Certificate and key match."
+    else
+        echo "[FAIL] Certificate and key do NOT match." >&2
+        exit 1
+    fi
+
+    # Expiry
+    EXPIRY=$(openssl x509 -noout -enddate -in "$CERT" | cut -d= -f2)
+    EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s)
+    NOW_EPOCH=$(date +%s)
+    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+
+    if [[ "$DAYS_LEFT" -le 0 ]]; then
+        echo "[FAIL] Certificate has EXPIRED ($EXPIRY)." >&2
+        exit 1
+    elif [[ "$DAYS_LEFT" -le 14 ]]; then
+        echo "[WARN] Certificate expires in $DAYS_LEFT day(s) — $EXPIRY"
+    else
+        echo "[OK] Certificate valid for $DAYS_LEFT more day(s) — expires $EXPIRY"
+    fi
+    ;;
+
+  -h|--help|"")
+    usage
+    ;;
+
+  *)
+    echo "Error: unknown command '$CMD'." >&2
+    echo "Run 'ulaknode-cert --help' for usage." >&2
+    exit 1
+    ;;
+esac

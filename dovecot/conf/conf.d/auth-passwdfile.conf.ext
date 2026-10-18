@@ -1,0 +1,8 @@
+passdb passwd-file {
+  passwd_file_path = /etc/dovecot/passwd
+  default_password_scheme = SHA512-CRYPT
+}
+
+userdb passwd-file {
+  passwd_file_path = /etc/dovecot/passwd
+}

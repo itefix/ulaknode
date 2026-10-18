@@ -1,0 +1,4 @@
+# Managed by ulaknode-dkim — do not edit manually.
+# Rebuilt from /etc/opendkim/keys/<domain>/<selector>.private on
+# generate/remove. Format:
+#   *@domain selector._domainkey.domain

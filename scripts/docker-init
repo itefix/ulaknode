@@ -1,0 +1,171 @@
+#!/bin/bash
+# docker-init — PID 1 init script for ulaknode
+# Starts all mail services in dependency order, handles graceful shutdown.
+
+set -uo pipefail
+
+LOG=/var/log
+
+log()  { echo "[$(date +'%F %T')] $*"; }
+fail() { log "ERROR: $*" >&2; }
+
+wait_for_port() {
+    local port="$1" timeout="${2:-30}" start=$SECONDS
+    until socat /dev/null TCP4:127.0.0.1:"$port",connect-timeout=1 2>/dev/null; do
+        (( SECONDS - start >= timeout )) && return 1
+        sleep 1
+    done
+}
+
+wait_for_socket() {
+    local sock="$1" timeout="${2:-30}" start=$SECONDS
+    until [[ -S "$sock" ]]; do
+        (( SECONDS - start >= timeout )) && return 1
+        sleep 1
+    done
+}
+
+stop_all() {
+    log "Shutting down..."
+    postfix stop               >> "$LOG/postfix.log"  2>&1 || true
+    dovecot stop               >> "$LOG/dovecot.log"  2>&1 || true
+    [[ -f /run/spamass-milter/spamass-milter.pid ]] && kill "$(cat /run/spamass-milter/spamass-milter.pid)" 2>/dev/null || true
+    [[ -f /run/spamassassin/spamd.pid ]] && kill "$(cat /run/spamassassin/spamd.pid)" 2>/dev/null || true
+    [[ -f /run/opendmarc/opendmarc.pid ]] && kill "$(cat /run/opendmarc/opendmarc.pid)" 2>/dev/null || true
+    [[ -f /run/opendkim/opendkim.pid ]] && kill "$(cat /run/opendkim/opendkim.pid)" 2>/dev/null || true
+    pkill -f 'postgrey --inet' 2>/dev/null || true
+    fail2ban-client stop >/dev/null 2>&1 || true
+    [[ -f /run/unbound/unbound.pid ]] && kill "$(cat /run/unbound/unbound.pid)" 2>/dev/null || true
+    [[ -n "${AGENT_PID:-}" ]] && kill "$AGENT_PID" 2>/dev/null || true
+    log "Done."
+}
+trap stop_all SIGTERM SIGINT
+
+# Remove stale sockets left over from a previous stop/start of this same
+# container — a `docker stop` + `docker start` cycle (as opposed to a fresh
+# `docker run`) preserves /run, and a leftover socket file can make the
+# daemon that owns it fail to (re)bind at boot (seen in practice with
+# opendkim: "socket cleanup failed: Address already in use").
+rm -f /run/opendkim/opendkim.sock /run/opendmarc/opendmarc.sock \
+      /run/spamass-milter/spamass-milter.sock /run/fail2ban/fail2ban.sock \
+      /run/unbound/unbound.pid
+
+# Unbound goes first and everything else's DNS resolution depends on it —
+# postscreen's DNSBL lookups, outbound MX lookups, all of it. See
+# /etc/unbound for why this exists instead of just using the container's
+# default resolver.
+log "Starting unbound..."
+/usr/sbin/unbound -d -c /etc/unbound/unbound.conf >> "$LOG/unbound.log" 2>> "$LOG/unbound.err" &
+wait_for_port 53 30 || fail "unbound did not start in time"
+
+log "Verifying unbound resolves..."
+resolved=0
+for _ in $(seq 1 10); do
+    dig +short +time=2 +tries=1 @127.0.0.1 . NS 2>/dev/null | grep -q . && { resolved=1; break; }
+    sleep 1
+done
+(( resolved )) || fail "unbound is listening but not resolving yet — check $LOG/unbound.err"
+
+if [[ -w /etc/resolv.conf ]]; then
+    log "Pointing resolver at unbound..."
+    printf 'nameserver 127.0.0.1\noptions edns0\n' > /etc/resolv.conf
+else
+    fail "/etc/resolv.conf is not writable — DNSBL and mail delivery will keep using the container's default resolver instead of unbound"
+fi
+
+log "Starting postgrey..."
+# --delay=60: greylisting's value is requiring a retry at all (bots don't
+# retry); a long wait only delays legitimate first-contact mail — OTP codes,
+# password resets — until the sender's next retry.
+/usr/sbin/postgrey --inet=127.0.0.1:10023 --pidfile=/run/postgrey/postgrey.pid \
+    --user=postgrey --group=postgrey --delay=60 \
+    >> "$LOG/postgrey.log" 2>> "$LOG/postgrey.err" &
+wait_for_port 10023 30 || fail "postgrey did not start in time"
+
+log "Starting opendkim..."
+# Same capability-stripping treatment as spamass-milter — opendkim.conf's
+# own UserID directive already drops to opendkim, this adds no_new_privs and an empty capability set on top.
+# --clear-groups is safe here: opendkim.sock's ulaknode-mail group
+# ownership comes from the setgid bit on /run/opendkim, not the process's
+# own group (verified: opendkim's primary group is "opendkim", not
+# ulaknode-mail, yet the socket already comes out group-owned correctly).
+setpriv --reuid=opendkim --regid=opendkim --clear-groups \
+    --inh-caps=-all --bounding-set=-all --no-new-privs \
+    -- /usr/sbin/opendkim -f -x /etc/opendkim/opendkim.conf \
+    >> "$LOG/opendkim.log" 2>> "$LOG/opendkim.err" &
+wait_for_socket /run/opendkim/opendkim.sock 45 || fail "opendkim did not start in time"
+
+log "Starting opendmarc..."
+# Same as opendkim above — opendmarc.conf's UserID already drops to
+# opendmarc; --clear-groups is safe for the same reason (setgid bit on
+# /run/opendmarc, not process group, owns the socket's group).
+setpriv --reuid=opendmarc --regid=opendmarc --clear-groups \
+    --inh-caps=-all --bounding-set=-all --no-new-privs \
+    -- /usr/sbin/opendmarc -f -c /etc/opendmarc/opendmarc.conf \
+    >> "$LOG/opendmarc.log" 2>> "$LOG/opendmarc.err" &
+wait_for_socket /run/opendmarc/opendmarc.sock 45 || fail "opendmarc did not start in time"
+
+log "Starting spamd..."
+/usr/sbin/spamd --create-prefs --max-children=5 --helper-home-dir \
+    --username=debian-spamd -i 127.0.0.1 -p 783 \
+    --pidfile=/run/spamassassin/spamd.pid \
+    >> "$LOG/spamd.log" 2>> "$LOG/spamd.err" &
+wait_for_port 783 60 || fail "spamd did not start in time"
+
+log "Starting spamass-milter..."
+# -r is a starting reject threshold — SpamAssassin's score scale isn't
+# equivalent to rspamd's, tune after reviewing real mail flow.
+# -u here is NOT a privilege-drop flag despite looking like postgrey's — spamass-milter's own -u passes the recipient's username to
+# spamc for per-user preference lookups. It has no privilege-drop
+# mechanism of its own at all, so setpriv does the real work below.
+#
+# The socket's ulaknode-mail group ownership doesn't depend on that,
+# though — it comes from the setgid bit on /run/spamass-milter (chmod
+# 2770 below), which makes new files inherit the directory's group
+# regardless of which user creates them. umask 007 is scoped to just this
+# command so the socket's permission bits let postfix (in ulaknode-mail)
+# connect, without loosening file permissions for every other daemon.
+( umask 007
+  exec setpriv --reuid=debian-spamd --regid=debian-spamd --clear-groups \
+      --inh-caps=-all --bounding-set=-all --no-new-privs \
+      -- /usr/sbin/spamass-milter -p /run/spamass-milter/spamass-milter.sock \
+      -u debian-spamd -P /run/spamass-milter/spamass-milter.pid -r 15 \
+      -- -d 127.0.0.1 -p 783
+) >> "$LOG/spamass-milter.log" 2>> "$LOG/spamass-milter.err" &
+wait_for_socket /run/spamass-milter/spamass-milter.sock 30 || fail "spamass-milter did not start in time"
+
+log "Starting postfix..."
+postfix start >> "$LOG/postfix.log" 2>> "$LOG/postfix.err"
+
+log "Starting dovecot..."
+mkdir -p /var/spool/postfix/private
+/usr/sbin/dovecot -F >> "$LOG/dovecot.log" 2>> "$LOG/dovecot.err" &
+
+log "Starting fail2ban..."
+/usr/bin/fail2ban-server -f -x >> "$LOG/fail2ban.log" 2>> "$LOG/fail2ban.err" &
+wait_for_socket /run/fail2ban/fail2ban.sock 30 || fail "fail2ban did not start in time"
+
+# Lets a sidecar web UI (no shared filesystem, no doveadm/postmap) drive
+# password/quota changes through ulaknode-mailbox over a tiny TCP protocol.
+# `range=` is socat's peer-address ACL — only a single CIDR is bound here,
+# so it defaults to loopback-only (safe under network_mode: host, where
+# "loopback" really does mean "only this container/host"). Widen
+# ULAKNODE_AGENT_ALLOWED_IPS and ULAKNODE_AGENT_BIND for a standard bridge
+# setup where the sidecar is a separate container.
+AGENT_PORT="${ULAKNODE_AGENT_PORT:-8787}"
+AGENT_BIND="${ULAKNODE_AGENT_BIND:-127.0.0.1}"
+AGENT_ALLOWED="${ULAKNODE_AGENT_ALLOWED_IPS:-127.0.0.1/32}"
+# ulaknode-agent itself enforces this (see that script) — it fails closed
+# and rejects every command if ULAKNODE_AGENT_TOKEN isn't set, but that's
+# silent from here, so warn loudly at startup instead of leaving an
+# operator to wonder why every request comes back "unauthorized".
+[[ -z "${ULAKNODE_AGENT_TOKEN:-}" ]] && \
+    fail "ULAKNODE_AGENT_TOKEN is not set — ulaknode-agent will reject every request"
+log "Starting ulaknode-agent on ${AGENT_BIND}:${AGENT_PORT} (allowed: ${AGENT_ALLOWED})..."
+socat TCP4-LISTEN:"${AGENT_PORT}",bind="${AGENT_BIND}",range="${AGENT_ALLOWED}",fork,reuseaddr \
+    EXEC:/usr/local/bin/ulaknode-agent \
+    >> "$LOG/ulaknode-agent.log" 2>> "$LOG/ulaknode-agent.err" &
+AGENT_PID=$!
+
+log "All services running."
+while true; do sleep 60; done

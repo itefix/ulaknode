@@ -1,0 +1,65 @@
+#!/bin/bash
+# ulaknode-errlog — show stderr error logs for a supervised service
+# Usage: ulaknode-errlog <service> [lines]
+
+set -euo pipefail
+
+SERVICE="${1:-}"
+LINES="${2:-50}"
+
+usage() {
+    echo "Usage: ulaknode-errlog <service> [lines]" >&2
+    echo "" >&2
+    echo "Services:" >&2
+    echo "  postfix         SMTP server" >&2
+    echo "  dovecot         IMAP server" >&2
+    echo "  opendkim        DKIM signing/verification" >&2
+    echo "  opendmarc       DMARC enforcement" >&2
+    echo "  spamassassin    spam scoring daemon (spamd)" >&2
+    echo "  spamass-milter  SpamAssassin milter" >&2
+    echo "  postgrey        greylisting policy service" >&2
+    echo "  fail2ban        brute-force ban service" >&2
+    echo "  unbound         recursive DNS resolver (postscreen DNSBL lookups)" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  lines  number of lines to show (default: 50)" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  ulaknode-errlog postfix" >&2
+    echo "  ulaknode-errlog dovecot 100" >&2
+    exit 1
+}
+
+if [[ "$SERVICE" == "-h" || "$SERVICE" == "--help" || -z "$SERVICE" ]]; then
+    usage
+fi
+
+if ! [[ "$LINES" =~ ^[0-9]+$ ]] || [[ "$LINES" -eq 0 ]]; then
+    echo "Error: lines must be a positive integer." >&2
+    exit 1
+fi
+
+case "$SERVICE" in
+  postfix)         LOG="/var/log/postfix.err" ;;
+  dovecot)         LOG="/var/log/dovecot.err" ;;
+  opendkim)        LOG="/var/log/opendkim.err" ;;
+  opendmarc)       LOG="/var/log/opendmarc.err" ;;
+  spamassassin)    LOG="/var/log/spamd.err" ;;
+  spamass-milter)  LOG="/var/log/spamass-milter.err" ;;
+  postgrey)        LOG="/var/log/postgrey.err" ;;
+  fail2ban)        LOG="/var/log/fail2ban.err" ;;
+  unbound)         LOG="/var/log/unbound.err" ;;
+  *)
+    echo "Error: unknown service '$SERVICE'." >&2
+    echo "Run 'ulaknode-errlog --help' for usage." >&2
+    exit 1
+    ;;
+esac
+
+if [[ ! -f "$LOG" ]]; then
+    echo "Error: log file not found: $LOG" >&2
+    exit 1
+fi
+
+echo "==> $LOG (last $LINES lines)"
+tail -n "$LINES" "$LOG"

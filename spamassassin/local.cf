@@ -1,0 +1,27 @@
+# SpamAssassin configuration for ulaknode
+# Managed as a persistent volume — edit freely, changes survive restarts.
+# After editing: docker exec ulaknode ulaknode-service reload spamassassin
+
+required_score          5.0
+rewrite_header Subject  [SPAM]
+report_safe             0
+
+use_bayes               1
+bayes_auto_learn         1
+bayes_path              /var/lib/spamassassin/bayes/bayes
+
+# DNSBL/RBL blocklist checking is still deliberately disabled here even
+# though Postfix now does its own DNSBL checking via postscreen, backed by
+# a dedicated Unbound resolver (see /etc/unbound, docs/self-hosted.md).
+# Turning this back on is a separate decision — SpamAssassin's DNS tests
+# fire per-message (URIBL on every URI in the body) rather than once per
+# connection, a much higher query volume than postscreen's one-shot
+# per-connection DNSBL check, and worth reassessing on its own.
+#
+# skip_rbl_checks only covers the RCVD_IN_* (Received-header) rules — it
+# does not stop URIBL_* (URI-based DNSBL) lookups, which kept hitting
+# multi.uribl.com/dbl.opendns.com and got query-rate-limited. use_dns 0 is
+# the actual master switch: it disables every DNS-dependent SpamAssassin
+# test, URIBL included.
+skip_rbl_checks         1
+use_dns                 0

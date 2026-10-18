@@ -1,0 +1,2 @@
+# Managed by ulaknode-ban (fail2ban action target) — do not edit directly.
+# cidr(5) table: one "<ip-or-cidr> REJECT ..." line per banned client.

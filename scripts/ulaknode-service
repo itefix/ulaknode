@@ -1,0 +1,202 @@
+#!/bin/bash
+# ulaknode-service — start/stop/restart/status mail services
+
+set -euo pipefail
+
+ACTIONS="start|stop|restart|reload|status"
+SERVICE_LIST=(postfix dovecot opendkim opendmarc spamassassin spamass-milter postgrey fail2ban unbound)
+SERVICES="$(IFS='|'; echo "${SERVICE_LIST[*]}")"
+
+usage() {
+    echo "Usage: ulaknode-service <action> <service>" >&2
+    echo "" >&2
+    echo "Actions:  start  stop  restart  reload  status" >&2
+    echo "Services: postfix  dovecot  opendkim  opendmarc  spamassassin" >&2
+    echo "          spamass-milter  postgrey" >&2
+    echo "          fail2ban  unbound" >&2
+    echo "          all  (run the action against every service above)" >&2
+    exit 1
+}
+
+ACTION="${1:-}"
+SERVICE="${2:-}"
+
+[[ "$ACTION" == "-h" || "$ACTION" == "--help" || -z "$ACTION" ]] && usage
+
+case "$ACTION" in
+  start|stop|restart|reload|status) ;;
+  *) echo "Error: invalid action '$ACTION'. Allowed: $ACTIONS" >&2; exit 1 ;;
+esac
+
+[[ -z "$SERVICE" ]] && { echo "Error: service name required. Allowed: $SERVICES|all" >&2; exit 1; }
+
+LOG=/var/log
+
+pidof_service() {
+    case "$1" in
+      dovecot)         cat /run/dovecot/master.pid 2>/dev/null ;;
+      opendkim)        cat /run/opendkim/opendkim.pid 2>/dev/null ;;
+      opendmarc)       cat /run/opendmarc/opendmarc.pid 2>/dev/null ;;
+      spamassassin)    cat /run/spamassassin/spamd.pid 2>/dev/null ;;
+      spamass-milter)  cat /run/spamass-milter/spamass-milter.pid 2>/dev/null ;;
+      # postgrey doesn't reliably write its --pidfile in practice, and as a
+      # Perl script its process "comm" name is the interpreter, not
+      # "postgrey" — match on the full command line instead of -x
+      postgrey)        pgrep -f 'postgrey --inet' 2>/dev/null | head -1 ;;
+      fail2ban)        cat /run/fail2ban/fail2ban.pid 2>/dev/null ;;
+      unbound)         cat /run/unbound/unbound.pid 2>/dev/null ;;
+    esac
+}
+
+is_running() {
+    local pid
+    case "$1" in
+      postfix)   postfix status &>/dev/null ;;
+      dovecot|opendkim|opendmarc|spamassassin|spamass-milter|postgrey|fail2ban|unbound)
+          pid=$(pidof_service "$1") && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null ;;
+    esac
+}
+
+do_start() {
+    echo "[$(date +'%F %T')] start $SERVICE"
+    case "$SERVICE" in
+      postfix)  postfix start >> "$LOG/postfix.log"  2>> "$LOG/postfix.err" ;;
+      dovecot)  dovecot       >> "$LOG/dovecot.log"  2>> "$LOG/dovecot.err" ;;
+      opendkim)
+          # Stale socket from an unclean stop makes opendkim fail to bind
+          # ("socket cleanup failed: Address already in use") — see docker-init.
+          rm -f /run/opendkim/opendkim.sock
+          # See docker-init for why setpriv wraps this — keep in sync.
+          setpriv --reuid=opendkim --regid=opendkim --clear-groups \
+              --inh-caps=-all --bounding-set=-all --no-new-privs \
+              -- /usr/sbin/opendkim -f -x /etc/opendkim/opendkim.conf \
+              >> "$LOG/opendkim.log" 2>> "$LOG/opendkim.err" & ;;
+      opendmarc)
+          rm -f /run/opendmarc/opendmarc.sock
+          setpriv --reuid=opendmarc --regid=opendmarc --clear-groups \
+              --inh-caps=-all --bounding-set=-all --no-new-privs \
+              -- /usr/sbin/opendmarc -f -c /etc/opendmarc/opendmarc.conf \
+              >> "$LOG/opendmarc.log" 2>> "$LOG/opendmarc.err" & ;;
+      spamassassin)
+          /usr/sbin/spamd --create-prefs --max-children=5 --helper-home-dir \
+              --username=debian-spamd -i 127.0.0.1 -p 783 \
+              --pidfile=/run/spamassassin/spamd.pid \
+              >> "$LOG/spamd.log" 2>> "$LOG/spamd.err" & ;;
+      spamass-milter)
+          # See docker-init for why this goes through setpriv (spamass-milter
+          # has no privilege-drop mechanism of its own — its -u flag is
+          # unrelated, see there) and the scoped umask (no CLI flag for
+          # socket mode; group ownership comes from the setgid bit on
+          # /run/spamass-milter instead).
+          rm -f /run/spamass-milter/spamass-milter.sock
+          ( umask 007
+            exec setpriv --reuid=debian-spamd --regid=debian-spamd --clear-groups \
+                --inh-caps=-all --bounding-set=-all --no-new-privs \
+                -- /usr/sbin/spamass-milter -p /run/spamass-milter/spamass-milter.sock \
+                -u debian-spamd -P /run/spamass-milter/spamass-milter.pid -r 15 \
+                -- -d 127.0.0.1 -p 783
+          ) >> "$LOG/spamass-milter.log" 2>> "$LOG/spamass-milter.err" & ;;
+      postgrey)
+          /usr/sbin/postgrey --inet=127.0.0.1:10023 --pidfile=/run/postgrey/postgrey.pid \
+              --user=postgrey --group=postgrey --delay=300 \
+              >> "$LOG/postgrey.log" 2>> "$LOG/postgrey.err" & ;;
+      fail2ban)
+          rm -f /run/fail2ban/fail2ban.sock
+          /usr/bin/fail2ban-server -f -x >> "$LOG/fail2ban.log" 2>> "$LOG/fail2ban.err" & ;;
+      unbound)
+          rm -f /run/unbound/unbound.pid
+          /usr/sbin/unbound -d -c /etc/unbound/unbound.conf \
+              >> "$LOG/unbound.log" 2>> "$LOG/unbound.err" & ;;
+      *) echo "Error: unknown service '$SERVICE'. Allowed: $SERVICES" >&2; exit 1 ;;
+    esac
+}
+
+do_stop() {
+    echo "[$(date +'%F %T')] stop $SERVICE"
+    case "$SERVICE" in
+      postfix)   postfix stop ;;
+      dovecot)   dovecot stop ;;
+      fail2ban)
+          fail2ban-client stop >/dev/null 2>&1 || { echo "fail2ban: not running"; return; } ;;
+      opendkim|opendmarc)
+          local pid
+          pid=$(pidof_service "$SERVICE") || { echo "$SERVICE: not running"; return; }
+          kill "$pid"
+          # Restart race: the
+          # old process holds the unix socket path until it's actually
+          # reaped, not just signaled — killing it doesn't free the path
+          # instantly. do_start's `rm -f` + bind can then race a
+          # not-yet-gone old process, and the new one binds nothing but
+          # doesn't exit or log an error either (confirmed via repeated
+          # rapid-restart testing: process alive, socket/pidfile never
+          # created). Wait for the PID to actually disappear.
+          for _ in $(seq 1 50); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 0.1
+          done
+          ;;
+      spamassassin|spamass-milter|postgrey|unbound)
+          local pid
+          pid=$(pidof_service "$SERVICE") || { echo "$SERVICE: not running"; return; }
+          kill "$pid"
+          ;;
+      *) echo "Error: unknown service '$SERVICE'. Allowed: $SERVICES" >&2; exit 1 ;;
+    esac
+}
+
+do_reload() {
+    echo "[$(date +'%F %T')] reload $SERVICE"
+    case "$SERVICE" in
+      postfix)
+          postfix reload
+          ;;
+      dovecot)
+          dovecot reload
+          ;;
+      fail2ban)
+          fail2ban-client reload
+          ;;
+      opendkim|opendmarc|spamassassin|spamass-milter|postgrey|unbound)
+          # opendkim/opendmarc's SIGHUP-triggered socket rebind can fail
+          # ("socket cleanup failed: Address already in use") and take the
+          # daemon down instead of reloading it; the rest have no reload
+          # signal at all. Fall back to a full restart for all of them.
+          echo "$SERVICE: reload not supported — performing restart"
+          do_stop; sleep 1; do_start
+          ;;
+      *) echo "Error: unknown service '$SERVICE'. Allowed: $SERVICES" >&2; exit 1 ;;
+    esac
+}
+
+do_status() {
+    echo "[$(date +'%F %T')] status $SERVICE"
+    case "$SERVICE" in
+      postfix) postfix status ;;
+      dovecot|opendkim|opendmarc|spamassassin|spamass-milter|postgrey|fail2ban|unbound)
+          if is_running "$SERVICE"; then
+              echo "$SERVICE: RUNNING (pid $(pidof_service "$SERVICE"))"
+          else
+              echo "$SERVICE: STOPPED"
+          fi
+          ;;
+      *) echo "Error: unknown service '$SERVICE'. Allowed: $SERVICES" >&2; exit 1 ;;
+    esac
+}
+
+run_action() {
+    case "$ACTION" in
+      start)   do_start ;;
+      stop)    do_stop ;;
+      restart) do_stop; sleep 1; do_start ;;
+      reload)  do_reload ;;
+      status)  do_status ;;
+    esac
+}
+
+if [[ "$SERVICE" == "all" ]]; then
+    for SERVICE in "${SERVICE_LIST[@]}"; do
+        run_action
+    done
+else
+    run_action
+fi

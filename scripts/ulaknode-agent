@@ -1,0 +1,83 @@
+#!/bin/bash
+# ulaknode-agent — line-protocol handler for ulaknode-mailbox, invoked once
+# per TCP connection by socat (see docker-init). Exists so a sidecar
+# container with no shared filesystem and no doveadm/postmap of its own can
+# still drive password/quota changes through the real mailbox script.
+#
+# Every request must carry a shared-secret token as its first argument,
+# set on this side via ULAKNODE_AGENT_TOKEN (inherited from the
+# environment socat was started in — see docker-init). Fails closed: if
+# ULAKNODE_AGENT_TOKEN isn't set here, or doesn't match what the caller
+# sent, every command is rejected before it does anything, regardless of
+# which command it was.
+#
+# Protocol: one request line in, one response out (SHOW's response body may
+# span multiple lines). Token/email/password/quota args are base64-encoded
+# so values can't collide with the field separator.
+#   PASSWD    <b64 token> <b64 email> <b64 password>
+#   QUOTA-SET <b64 token> <b64 email> <b64 limit>
+#   SHOW      <b64 token> <b64 email>
+# Response: "OK: <message>" or "ERROR: <message>"
+
+set -uo pipefail
+
+MAILBOX=/usr/local/bin/ulaknode-mailbox
+
+decode() {
+    base64 -d <<< "$1" 2>/dev/null
+}
+
+read -r cmd b64_token b64_a b64_b _rest
+
+token=$(decode "${b64_token:-}")
+if [[ -z "${ULAKNODE_AGENT_TOKEN:-}" || "$token" != "$ULAKNODE_AGENT_TOKEN" ]]; then
+    echo "ERROR: unauthorized"
+    exit 0
+fi
+
+case "$cmd" in
+  PASSWD)
+    email=$(decode "${b64_a:-}")
+    password=$(decode "${b64_b:-}")
+    if [[ -z "$email" || -z "$password" ]]; then
+        echo "ERROR: usage: PASSWD <email> <password>"
+        exit 0
+    fi
+    if out=$("$MAILBOX" passwd "$email" "$password" 2>&1); then
+        echo "OK: ${out:-password updated}"
+    else
+        echo "ERROR: ${out:-passwd command failed}"
+    fi
+    ;;
+
+  QUOTA-SET)
+    email=$(decode "${b64_a:-}")
+    limit=$(decode "${b64_b:-}")
+    if [[ -z "$email" || -z "$limit" ]]; then
+        echo "ERROR: usage: QUOTA-SET <email> <limit>"
+        exit 0
+    fi
+    if out=$("$MAILBOX" quota-set "$email" "$limit" 2>&1); then
+        echo "OK: ${out:-quota updated}"
+    else
+        echo "ERROR: ${out:-quota-set command failed}"
+    fi
+    ;;
+
+  SHOW)
+    email=$(decode "${b64_a:-}")
+    if [[ -z "$email" ]]; then
+        echo "ERROR: usage: SHOW <email>"
+        exit 0
+    fi
+    if out=$("$MAILBOX" show "$email" 2>&1); then
+        echo "OK: ${out:-mailbox details unavailable}"
+    else
+        echo "ERROR: ${out:-show command failed}"
+    fi
+    ;;
+
+  *)
+    echo "ERROR: unknown command"
+    ;;
+esac

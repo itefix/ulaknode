@@ -1,0 +1,7 @@
+# Keep fail2ban's ban-tracking state on the persistent /etc/fail2ban
+# volume, not the default /var/lib/fail2ban (ephemeral container
+# filesystem) — otherwise a container restart makes fail2ban forget which
+# IPs it banned, and it will never call actionunban for them, turning a
+# temporary ban into a silent, permanent one.
+[Definition]
+dbfile = /etc/fail2ban/fail2ban.sqlite3
