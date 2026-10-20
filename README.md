@@ -121,7 +121,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Support
 
-ulaknode is free software provided as-is, with no support or SLA. Issues and pull requests are welcome and handled on a best-effort basis. For security problems see [SECURITY.md](SECURITY.md).
+ulaknode is free software provided as-is, with no support or SLA. Issues are welcome and handled on a best-effort basis. For security problems see [SECURITY.md](SECURITY.md).
 
 ---
 
