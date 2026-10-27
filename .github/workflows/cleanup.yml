@@ -1,0 +1,29 @@
+name: cleanup
+
+on:
+  schedule:
+    - cron: "0 5 2 * *"   # monthly (2nd, 05:00 UTC), after the monthly rebuild
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted without deleting"
+        type: boolean
+        default: true
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # Deletes untagged versions older than a year (leftovers of rebuilds that
+      # moved the version tags). Platform children of tagged multi-arch images
+      # are protected by the action.
+      - uses: snok/container-retention-policy@v3.1.0
+        with:
+          account: itefix
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: ulaknode
+          tag-selection: untagged
+          cut-off: 1y
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
