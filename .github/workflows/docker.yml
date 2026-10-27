@@ -50,7 +50,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           pull: true
           push: true
+          build-args: VERSION=${{ steps.v.outputs.version }}
           tags: |
             ghcr.io/itefix/ulaknode:${{ steps.v.outputs.version }}
             ghcr.io/itefix/ulaknode:${{ steps.v.outputs.minor }}
             ghcr.io/itefix/ulaknode:latest
+      - name: component versions
+        run: |
+          for p in linux/amd64 linux/arm64; do
+            echo "### ulaknode ${{ steps.v.outputs.version }} ($p)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            docker run --rm --platform "$p" --entrypoint ulaknode-version \
+              ghcr.io/itefix/ulaknode:${{ steps.v.outputs.version }} | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
