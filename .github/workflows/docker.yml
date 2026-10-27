@@ -4,7 +4,7 @@ on:
   push:
     tags: ["[0-9]+.[0-9]+.[0-9]+"]
   schedule:
-    - cron: "0 4 * * 1"   # weekly rebuild to pick up Debian security updates
+    - cron: "0 4 1 * *"   # monthly rebuild (1st, 04:00 UTC) to pick up Debian security updates
   workflow_dispatch:
   pull_request:
 
