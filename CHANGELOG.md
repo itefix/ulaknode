@@ -3,6 +3,16 @@
 Versions are [semver](https://semver.org/) and match the Docker Hub image
 tags (`ghcr.io/itefix/ulaknode:<version>`).
 
+## 2.6.1 - 2026-10-27
+
+- `ULAKNODE_VERSION` is now set correctly inside the image (it was `dev`), so
+  `ulaknode-version` reports the real release.
+- Image rebuilds run monthly instead of weekly to pick up Debian security
+  updates.
+- Build summary lists the installed component versions for each architecture.
+- Untagged package versions older than one year are pruned automatically.
+- Updated support information.
+
 ## 2.6.0 - 2026-10-18
 
 - Removed ClamAV: it blocked nothing real in production and cost ~1 GB RAM.
