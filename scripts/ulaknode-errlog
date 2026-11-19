@@ -17,7 +17,6 @@ usage() {
     echo "  opendmarc       DMARC enforcement" >&2
     echo "  spamassassin    spam scoring daemon (spamd)" >&2
     echo "  spamass-milter  SpamAssassin milter" >&2
-    echo "  postgrey        greylisting policy service" >&2
     echo "  fail2ban        brute-force ban service" >&2
     echo "  unbound         recursive DNS resolver (postscreen DNSBL lookups)" >&2
     echo "" >&2
@@ -46,7 +45,6 @@ case "$SERVICE" in
   opendmarc)       LOG="/var/log/opendmarc.err" ;;
   spamassassin)    LOG="/var/log/spamd.err" ;;
   spamass-milter)  LOG="/var/log/spamass-milter.err" ;;
-  postgrey)        LOG="/var/log/postgrey.err" ;;
   fail2ban)        LOG="/var/log/fail2ban.err" ;;
   unbound)         LOG="/var/log/unbound.err" ;;
   *)

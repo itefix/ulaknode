@@ -61,10 +61,6 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && \
-    apt-get -y install --no-install-recommends postgrey && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && \
     apt-get -y install --no-install-recommends fail2ban && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -89,8 +85,7 @@ RUN groupadd --system ulaknode-mail && \
     usermod -a -G ulaknode-mail dovecot && \
     usermod -a -G ulaknode-mail opendkim && \
     usermod -a -G ulaknode-mail opendmarc && \
-    usermod -a -G ulaknode-mail debian-spamd && \
-    usermod -a -G ulaknode-mail postgrey
+    usermod -a -G ulaknode-mail debian-spamd
 
 # Copy configurations into default locations
 COPY postfix/conf/     /etc/postfix/
@@ -99,7 +94,6 @@ COPY opendkim/         /etc/opendkim/
 COPY opendmarc/        /etc/opendmarc/
 COPY spamassassin/     /etc/spamassassin/
 COPY policyd-spf/      /etc/postfix-policyd-spf-python/
-COPY postgrey/         /etc/postgrey/
 COPY unbound/          /etc/unbound/
 
 # fail2ban/ only adds to the package's stock config tree (jail.d/,
@@ -118,21 +112,17 @@ COPY unbound/          /etc/unbound.defaults/
 # Snapshot the merged result (package defaults + our additions), not just
 # our repo folder — copying only fail2ban/ here would seed a fresh volume
 # with our 4 files and lose the package's stock filter/action library.
-# Same for postgrey: the package ships the big whitelist_clients /
-# whitelist_recipients lists; our repo only adds the .local companions.
-RUN cp -r /etc/fail2ban /etc/fail2ban.defaults && \
-    cp -r /etc/postgrey /etc/postgrey.defaults
+RUN cp -r /etc/fail2ban /etc/fail2ban.defaults
 
 # Copy scripts
 COPY scripts/* /usr/local/bin/
 RUN chmod 755 /usr/local/bin/*
 
 # Create runtime directories
-RUN mkdir -p /run/opendkim /run/opendmarc /run/spamassassin /run/spamass-milter /run/postgrey /run/fail2ban /run/unbound && \
+RUN mkdir -p /run/opendkim /run/opendmarc /run/spamassassin /run/spamass-milter /run/fail2ban /run/unbound && \
     chown -R opendkim:opendkim /run/opendkim && \
     chown -R opendmarc:opendmarc /run/opendmarc && \
     chown -R debian-spamd:debian-spamd /run/spamassassin /run/spamass-milter && \
-    chown -R postgrey:postgrey /run/postgrey && \
     chown -R unbound:unbound /run/unbound && \
     chgrp ulaknode-mail /run/opendkim /run/opendmarc /run/spamass-milter && \
     chmod 2770 /run/opendkim /run/opendmarc /run/spamass-milter
@@ -160,7 +150,7 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
 # Persistent volumes
 VOLUME ["/var/mail", "/var/log", "/etc/postfix", "/etc/dovecot", "/etc/ssl/mail", \
         "/etc/opendkim", "/etc/opendmarc", "/etc/spamassassin", \
-        "/etc/postfix-policyd-spf-python", "/etc/postgrey", "/etc/fail2ban", \
+        "/etc/postfix-policyd-spf-python", "/etc/fail2ban", \
         "/etc/unbound"]
 
 # Entrypoint

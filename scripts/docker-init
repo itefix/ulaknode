@@ -33,7 +33,6 @@ stop_all() {
     [[ -f /run/spamassassin/spamd.pid ]] && kill "$(cat /run/spamassassin/spamd.pid)" 2>/dev/null || true
     [[ -f /run/opendmarc/opendmarc.pid ]] && kill "$(cat /run/opendmarc/opendmarc.pid)" 2>/dev/null || true
     [[ -f /run/opendkim/opendkim.pid ]] && kill "$(cat /run/opendkim/opendkim.pid)" 2>/dev/null || true
-    pkill -f 'postgrey --inet' 2>/dev/null || true
     fail2ban-client stop >/dev/null 2>&1 || true
     [[ -f /run/unbound/unbound.pid ]] && kill "$(cat /run/unbound/unbound.pid)" 2>/dev/null || true
     [[ -n "${AGENT_PID:-}" ]] && kill "$AGENT_PID" 2>/dev/null || true
@@ -72,15 +71,6 @@ if [[ -w /etc/resolv.conf ]]; then
 else
     fail "/etc/resolv.conf is not writable — DNSBL and mail delivery will keep using the container's default resolver instead of unbound"
 fi
-
-log "Starting postgrey..."
-# --delay=60: greylisting's value is requiring a retry at all (bots don't
-# retry); a long wait only delays legitimate first-contact mail — OTP codes,
-# password resets — until the sender's next retry.
-/usr/sbin/postgrey --inet=127.0.0.1:10023 --pidfile=/run/postgrey/postgrey.pid \
-    --user=postgrey --group=postgrey --delay=60 \
-    >> "$LOG/postgrey.log" 2>> "$LOG/postgrey.err" &
-wait_for_port 10023 30 || fail "postgrey did not start in time"
 
 log "Starting opendkim..."
 # Same capability-stripping treatment as spamass-milter — opendkim.conf's
@@ -133,6 +123,15 @@ log "Starting spamass-milter..."
       -- -d 127.0.0.1 -p 783
 ) >> "$LOG/spamass-milter.log" 2>> "$LOG/spamass-milter.err" &
 wait_for_socket /run/spamass-milter/spamass-milter.sock 30 || fail "spamass-milter did not start in time"
+
+# Upgrade from <2.7.0: postgrey was removed, but a persisted /etc/postfix
+# volume still points smtpd_recipient_restrictions at it. With nothing
+# listening Postfix would defer all inbound mail (451), so drop the entry.
+if grep -q 'inet:127.0.0.1:10023' /etc/postfix/main.cf 2>/dev/null; then
+    log "Removing obsolete postgrey policy service from /etc/postfix/main.cf..."
+    perl -0pi -e 's/,(\s*\n\s*check_policy_service inet:127\.0\.0\.1:10023)/$1/; s/\n[ \t]*check_policy_service inet:127\.0\.0\.1:10023//' /etc/postfix/main.cf \
+        || fail "could not edit /etc/postfix/main.cf — remove the check_policy_service inet:127.0.0.1:10023 line manually"
+fi
 
 log "Starting postfix..."
 postfix start >> "$LOG/postfix.log" 2>> "$LOG/postfix.err"

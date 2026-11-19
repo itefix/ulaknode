@@ -3,6 +3,17 @@
 Versions are [semver](https://semver.org/) and match the Docker Hub image
 tags (`ghcr.io/itefix/ulaknode:<version>`).
 
+## 2.7.0 - 2026-11-19
+
+- Removed Postgrey (greylisting): the retry delay was too intrusive for
+  mail-based OTP and password-reset flows. Smaller image, one less daemon.
+  `ulaknode-service`, `ulaknode-errlog` and `ulaknode-version` no longer
+  know about it.
+- Upgrading: the `ulak_postgrey` volume (`-v ulak_postgrey:/etc/postgrey`) is
+  no longer used and can be dropped from your run command / compose file and
+  deleted. The obsolete `check_policy_service inet:127.0.0.1:10023` entry is
+  removed automatically from an existing `/etc/postfix/main.cf` at startup.
+
 ## 2.6.1 - 2026-10-27
 
 - `ULAKNODE_VERSION` is now set correctly inside the image (it was `dev`), so

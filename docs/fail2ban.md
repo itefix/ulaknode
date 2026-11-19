@@ -27,7 +27,6 @@ do.
 
 What's already protecting you in addition to this:
 
-- **Postgrey greylisting** — delays unknown senders, eliminates most bot-originated spam
 - **Dovecot `auth_failure_delay`** — slows down IMAP password guessing
 - **Postfix connection/rate limits** (`smtpd_client_connection_rate_limit`,
   `smtpd_client_message_rate_limit`, etc.) — caps how much a single IP can

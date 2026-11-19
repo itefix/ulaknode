@@ -54,8 +54,7 @@ smtpd_recipient_restrictions =
     permit_mynetworks,
     permit_sasl_authenticated,
     reject_unauth_destination,
-    check_policy_service unix:private/policyd-spf,
-    check_policy_service inet:127.0.0.1:10023
+    check_policy_service unix:private/policyd-spf
 
 smtpd_relay_restrictions =
     permit_sasl_authenticated,

@@ -32,10 +32,6 @@ fmt "opendmarc" "${OPENDMARC:-unknown}"
 SPAMASSASSIN=$(spamd --version 2>/dev/null | head -1 | awk '{print $4}')
 fmt "spamassassin" "${SPAMASSASSIN:-unknown}"
 
-# Postgrey
-POSTGREY=$(dpkg-query -W -f='${Version}' postgrey 2>/dev/null)
-fmt "postgrey" "${POSTGREY:-unknown}"
-
 # OpenSSL
 OPENSSL=$(openssl version 2>/dev/null | awk '{print $2}')
 fmt "openssl" "${OPENSSL:-unknown}"
