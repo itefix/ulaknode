@@ -15,8 +15,6 @@ usage() {
     echo "  dovecot         IMAP server" >&2
     echo "  opendkim        DKIM signing/verification" >&2
     echo "  opendmarc       DMARC enforcement" >&2
-    echo "  spamassassin    spam scoring daemon (spamd)" >&2
-    echo "  spamass-milter  SpamAssassin milter" >&2
     echo "  fail2ban        brute-force ban service" >&2
     echo "  unbound         recursive DNS resolver (postscreen DNSBL lookups)" >&2
     echo "" >&2
@@ -43,8 +41,6 @@ case "$SERVICE" in
   dovecot)         LOG="/var/log/dovecot.err" ;;
   opendkim)        LOG="/var/log/opendkim.err" ;;
   opendmarc)       LOG="/var/log/opendmarc.err" ;;
-  spamassassin)    LOG="/var/log/spamd.err" ;;
-  spamass-milter)  LOG="/var/log/spamass-milter.err" ;;
   fail2ban)        LOG="/var/log/fail2ban.err" ;;
   unbound)         LOG="/var/log/unbound.err" ;;
   *)

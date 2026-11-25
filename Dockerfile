@@ -53,10 +53,6 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && \
-    apt-get -y install --no-install-recommends spamassassin spamd spamc spamass-milter && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && \
     apt-get -y install --no-install-recommends postfix-policyd-spf-python && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -84,15 +80,13 @@ RUN groupadd --system ulaknode-mail && \
     usermod -a -G ulaknode-mail postfix && \
     usermod -a -G ulaknode-mail dovecot && \
     usermod -a -G ulaknode-mail opendkim && \
-    usermod -a -G ulaknode-mail opendmarc && \
-    usermod -a -G ulaknode-mail debian-spamd
+    usermod -a -G ulaknode-mail opendmarc
 
 # Copy configurations into default locations
 COPY postfix/conf/     /etc/postfix/
 COPY dovecot/conf/     /etc/dovecot/
 COPY opendkim/         /etc/opendkim/
 COPY opendmarc/        /etc/opendmarc/
-COPY spamassassin/     /etc/spamassassin/
 COPY policyd-spf/      /etc/postfix-policyd-spf-python/
 COPY unbound/          /etc/unbound/
 
@@ -106,7 +100,6 @@ COPY postfix/conf/     /etc/postfix.defaults/
 COPY dovecot/conf/     /etc/dovecot.defaults/
 COPY opendkim/         /etc/opendkim.defaults/
 COPY opendmarc/        /etc/opendmarc.defaults/
-COPY spamassassin/     /etc/spamassassin.defaults/
 COPY policyd-spf/      /etc/postfix-policyd-spf-python.defaults/
 COPY unbound/          /etc/unbound.defaults/
 # Snapshot the merged result (package defaults + our additions), not just
@@ -119,13 +112,12 @@ COPY scripts/* /usr/local/bin/
 RUN chmod 755 /usr/local/bin/*
 
 # Create runtime directories
-RUN mkdir -p /run/opendkim /run/opendmarc /run/spamassassin /run/spamass-milter /run/fail2ban /run/unbound && \
+RUN mkdir -p /run/opendkim /run/opendmarc /run/fail2ban /run/unbound && \
     chown -R opendkim:opendkim /run/opendkim && \
     chown -R opendmarc:opendmarc /run/opendmarc && \
-    chown -R debian-spamd:debian-spamd /run/spamassassin /run/spamass-milter && \
     chown -R unbound:unbound /run/unbound && \
-    chgrp ulaknode-mail /run/opendkim /run/opendmarc /run/spamass-milter && \
-    chmod 2770 /run/opendkim /run/opendmarc /run/spamass-milter
+    chgrp ulaknode-mail /run/opendkim /run/opendmarc && \
+    chmod 2770 /run/opendkim /run/opendmarc
 
 # Create DKIM key store
 RUN mkdir -p /etc/opendkim/keys /etc/opendkim.defaults/keys && \
@@ -149,7 +141,7 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
 
 # Persistent volumes
 VOLUME ["/var/mail", "/var/log", "/etc/postfix", "/etc/dovecot", "/etc/ssl/mail", \
-        "/etc/opendkim", "/etc/opendmarc", "/etc/spamassassin", \
+        "/etc/opendkim", "/etc/opendmarc", \
         "/etc/postfix-policyd-spf-python", "/etc/fail2ban", \
         "/etc/unbound"]
 

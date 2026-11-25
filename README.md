@@ -1,7 +1,7 @@
 
 # ulaknode — self-hosted mail server
 
-**Postfix + Dovecot + OpenDKIM/OpenDMARC + SpamAssassin — a complete business mail stack in a single Docker container.**
+**Postfix + Dovecot + OpenDKIM/OpenDMARC — a complete business mail stack in a single Docker container.**
 
 Deploy on any Linux server or VPS. No cloud dependency. No per-seat fees. Your data stays on your infrastructure.
 
@@ -15,7 +15,6 @@ Deploy on any Linux server or VPS. No cloud dependency. No per-seat fees. Your d
 | **Dovecot** | IMAP — mailbox access from any mail client |
 | **OpenDKIM / OpenDMARC** | DKIM signing & verification, DMARC enforcement |
 | **policyd-spf** | SPF checking |
-| **SpamAssassin** | Content-based spam scoring |
 | **Postscreen + Unbound** | DNSBL blocklist checking (Spamhaus, SpamCop) via a dedicated recursive resolver |
 | **Fail2ban** | Bans brute-force SMTP/IMAP clients at the application layer |
 
@@ -48,7 +47,6 @@ docker run -d \
   -v ulak_dovecot:/etc/dovecot \
   -v ulak_opendkim:/etc/opendkim \
   -v ulak_opendmarc:/etc/opendmarc \
-  -v ulak_spamassassin:/etc/spamassassin \
   -v ulak_policyd_spf:/etc/postfix-policyd-spf-python \
   -v ulak_fail2ban:/etc/fail2ban \
   -v ulak_unbound:/etc/unbound \

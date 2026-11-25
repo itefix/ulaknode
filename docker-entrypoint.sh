@@ -4,7 +4,7 @@ set -e
 # -------------------------------------------------------------
 # Seed config volumes on first boot
 # -------------------------------------------------------------
-for svc in postfix dovecot opendkim opendmarc spamassassin postfix-policyd-spf-python fail2ban unbound; do
+for svc in postfix dovecot opendkim opendmarc postfix-policyd-spf-python fail2ban unbound; do
     MARKER="/etc/${svc}/.seeded"
     if [[ ! -f "$MARKER" ]]; then
         echo "Seeding /etc/${svc} from image defaults..."

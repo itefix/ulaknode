@@ -97,7 +97,7 @@ smtp_tls_loglevel = 1
 smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 
 # ==============================
-# Milter integration (DKIM sign/verify, DMARC, spam)
+# Milter integration (DKIM sign/verify, DMARC)
 # ==============================
 # The smtp/submission services override smtpd_milters with their own list
 # below (see master.cf) — inbound gets the full chain, authenticated

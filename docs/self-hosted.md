@@ -72,7 +72,6 @@ docker run -d \
   -v ulak_dovecot:/etc/dovecot \
   -v ulak_opendkim:/etc/opendkim \
   -v ulak_opendmarc:/etc/opendmarc \
-  -v ulak_spamassassin:/etc/spamassassin \
   -v ulak_policyd_spf:/etc/postfix-policyd-spf-python \
   -v ulak_fail2ban:/etc/fail2ban \
   -v ulak_unbound:/etc/unbound \

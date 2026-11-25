@@ -27,7 +27,7 @@ smtpd     pass  -       -       n       -       -       smtpd
   -o smtpd_tls_received_header=yes
   -o smtpd_tls_session_cache_database=btree:${data_directory}/smtpd_scache
   -o milter_macro_daemon_name=ORIGINATING
-  -o smtpd_milters=unix:/run/opendkim/opendkim.sock,unix:/run/opendmarc/opendmarc.sock,unix:/run/spamass-milter/spamass-milter.sock
+  -o smtpd_milters=unix:/run/opendkim/opendkim.sock,unix:/run/opendmarc/opendmarc.sock
 
 # postscreen helpers — dnsblog performs the DNSBL lookups asynchronously
 # and reports back; tlsproxy is only exercised if postscreen_tls_security_level

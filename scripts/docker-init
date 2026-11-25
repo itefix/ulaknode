@@ -29,8 +29,6 @@ stop_all() {
     log "Shutting down..."
     postfix stop               >> "$LOG/postfix.log"  2>&1 || true
     dovecot stop               >> "$LOG/dovecot.log"  2>&1 || true
-    [[ -f /run/spamass-milter/spamass-milter.pid ]] && kill "$(cat /run/spamass-milter/spamass-milter.pid)" 2>/dev/null || true
-    [[ -f /run/spamassassin/spamd.pid ]] && kill "$(cat /run/spamassassin/spamd.pid)" 2>/dev/null || true
     [[ -f /run/opendmarc/opendmarc.pid ]] && kill "$(cat /run/opendmarc/opendmarc.pid)" 2>/dev/null || true
     [[ -f /run/opendkim/opendkim.pid ]] && kill "$(cat /run/opendkim/opendkim.pid)" 2>/dev/null || true
     fail2ban-client stop >/dev/null 2>&1 || true
@@ -46,7 +44,7 @@ trap stop_all SIGTERM SIGINT
 # daemon that owns it fail to (re)bind at boot (seen in practice with
 # opendkim: "socket cleanup failed: Address already in use").
 rm -f /run/opendkim/opendkim.sock /run/opendmarc/opendmarc.sock \
-      /run/spamass-milter/spamass-milter.sock /run/fail2ban/fail2ban.sock \
+      /run/fail2ban/fail2ban.sock \
       /run/unbound/unbound.pid
 
 # Unbound goes first and everything else's DNS resolution depends on it —
@@ -73,7 +71,7 @@ else
 fi
 
 log "Starting opendkim..."
-# Same capability-stripping treatment as spamass-milter — opendkim.conf's
+# Capability-stripping: opendkim.conf's
 # own UserID directive already drops to opendkim, this adds no_new_privs and an empty capability set on top.
 # --clear-groups is safe here: opendkim.sock's ulaknode-mail group
 # ownership comes from the setgid bit on /run/opendkim, not the process's
@@ -95,34 +93,14 @@ setpriv --reuid=opendmarc --regid=opendmarc --clear-groups \
     >> "$LOG/opendmarc.log" 2>> "$LOG/opendmarc.err" &
 wait_for_socket /run/opendmarc/opendmarc.sock 45 || fail "opendmarc did not start in time"
 
-log "Starting spamd..."
-/usr/sbin/spamd --create-prefs --max-children=5 --helper-home-dir \
-    --username=debian-spamd -i 127.0.0.1 -p 783 \
-    --pidfile=/run/spamassassin/spamd.pid \
-    >> "$LOG/spamd.log" 2>> "$LOG/spamd.err" &
-wait_for_port 783 60 || fail "spamd did not start in time"
-
-log "Starting spamass-milter..."
-# -r is a starting reject threshold — SpamAssassin's score scale isn't
-# equivalent to rspamd's, tune after reviewing real mail flow.
-# -u here is NOT a privilege-drop flag despite looking like postgrey's — spamass-milter's own -u passes the recipient's username to
-# spamc for per-user preference lookups. It has no privilege-drop
-# mechanism of its own at all, so setpriv does the real work below.
-#
-# The socket's ulaknode-mail group ownership doesn't depend on that,
-# though — it comes from the setgid bit on /run/spamass-milter (chmod
-# 2770 below), which makes new files inherit the directory's group
-# regardless of which user creates them. umask 007 is scoped to just this
-# command so the socket's permission bits let postfix (in ulaknode-mail)
-# connect, without loosening file permissions for every other daemon.
-( umask 007
-  exec setpriv --reuid=debian-spamd --regid=debian-spamd --clear-groups \
-      --inh-caps=-all --bounding-set=-all --no-new-privs \
-      -- /usr/sbin/spamass-milter -p /run/spamass-milter/spamass-milter.sock \
-      -u debian-spamd -P /run/spamass-milter/spamass-milter.pid -r 15 \
-      -- -d 127.0.0.1 -p 783
-) >> "$LOG/spamass-milter.log" 2>> "$LOG/spamass-milter.err" &
-wait_for_socket /run/spamass-milter/spamass-milter.sock 30 || fail "spamass-milter did not start in time"
+# Upgrade from <2.8.0: SpamAssassin was removed, but a persisted
+# /etc/postfix volume's master.cf still lists its milter socket. Drop it so
+# Postfix doesn't log a failed milter connection for every inbound message.
+if grep -q 'spamass-milter' /etc/postfix/master.cf 2>/dev/null; then
+    log "Removing obsolete spamass-milter from /etc/postfix/master.cf..."
+    sed -i 's#,unix:/run/spamass-milter/spamass-milter\.sock##' /etc/postfix/master.cf \
+        || fail "could not edit /etc/postfix/master.cf — remove the spamass-milter entry from smtpd_milters manually"
+fi
 
 # Upgrade from <2.7.0: postgrey was removed, but a persisted /etc/postfix
 # volume still points smtpd_recipient_restrictions at it. With nothing

@@ -25,7 +25,6 @@ services:
       - ulak_dovecot:/etc/dovecot
       - ulak_opendkim:/etc/opendkim
       - ulak_opendmarc:/etc/opendmarc
-      - ulak_spamassassin:/etc/spamassassin
       - ulak_policyd_spf:/etc/postfix-policyd-spf-python
       - ulak_fail2ban:/etc/fail2ban
       - ulak_unbound:/etc/unbound
@@ -40,7 +39,6 @@ volumes:
   ulak_dovecot:
   ulak_opendkim:
   ulak_opendmarc:
-  ulak_spamassassin:
   ulak_policyd_spf:
   ulak_fail2ban:
   ulak_unbound:

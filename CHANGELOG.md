@@ -3,6 +3,17 @@
 Versions are [semver](https://semver.org/) and match the Docker Hub image
 tags (`ghcr.io/itefix/ulaknode:<version>`).
 
+## 2.8.0 - 2026-11-25
+
+- Removed SpamAssassin (spamd and spamass-milter): content scoring is gone;
+  inbound filtering is now postscreen/DNSBL, SPF, DKIM and DMARC. Smaller
+  image, two fewer daemons. `ulaknode-service`, `ulaknode-errlog` and
+  `ulaknode-version` no longer know about it.
+- Upgrading: the `ulak_spamassassin` volume (`-v ulak_spamassassin:/etc/spamassassin`)
+  is no longer used and can be dropped from your run command / compose file
+  and deleted. The obsolete spamass-milter socket is removed automatically from
+  an existing `/etc/postfix/master.cf` at startup.
+
 ## 2.7.0 - 2026-11-19
 
 - Removed Postgrey (greylisting): the retry delay was too intrusive for

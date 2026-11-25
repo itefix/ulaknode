@@ -28,10 +28,6 @@ fmt "opendkim" "${OPENDKIM:-unknown}"
 OPENDMARC=$(dpkg-query -W -f='${Version}' opendmarc 2>/dev/null)
 fmt "opendmarc" "${OPENDMARC:-unknown}"
 
-# SpamAssassin
-SPAMASSASSIN=$(spamd --version 2>/dev/null | head -1 | awk '{print $4}')
-fmt "spamassassin" "${SPAMASSASSIN:-unknown}"
-
 # OpenSSL
 OPENSSL=$(openssl version 2>/dev/null | awk '{print $2}')
 fmt "openssl" "${OPENSSL:-unknown}"
