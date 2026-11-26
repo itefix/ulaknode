@@ -129,7 +129,8 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose mail ports + the ulaknode-agent sidecar RPC port (loopback-only by
-# default; see ULAKNODE_AGENT_BIND/ULAKNODE_AGENT_ALLOWED_IPS in docker-init)
+# default; see ULAKNODE_AGENT_BIND/ULAKNODE_AGENT_ALLOWED_IPS/ULAKNODE_AGENT_TLS
+# in docker-init)
 EXPOSE 25 587 993 8787
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \

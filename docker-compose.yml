@@ -14,6 +14,9 @@ services:
       # use a sidecar, set it here and to the identical value on its side.
       # Generate with e.g. `openssl rand -hex 32`.
       - ULAKNODE_AGENT_TOKEN=${ULAKNODE_AGENT_TOKEN:-}
+      # Set to yes to encrypt the agent port with the mail certificate. Needed
+      # when the sidecar reaches it over a network, see docs/self-hosted.md.
+      - ULAKNODE_AGENT_TLS=${ULAKNODE_AGENT_TLS:-}
     ports:
       - "25:25"
       - "587:587"

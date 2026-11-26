@@ -142,11 +142,29 @@ AGENT_ALLOWED="${ULAKNODE_AGENT_ALLOWED_IPS:-127.0.0.1/32}"
 # operator to wonder why every request comes back "unauthorized".
 [[ -z "${ULAKNODE_AGENT_TOKEN:-}" ]] && \
     fail "ULAKNODE_AGENT_TOKEN is not set — ulaknode-agent will reject every request"
-log "Starting ulaknode-agent on ${AGENT_BIND}:${AGENT_PORT} (allowed: ${AGENT_ALLOWED})..."
-socat TCP4-LISTEN:"${AGENT_PORT}",bind="${AGENT_BIND}",range="${AGENT_ALLOWED}",fork,reuseaddr \
-    EXEC:/usr/local/bin/ulaknode-agent \
-    >> "$LOG/ulaknode-agent.log" 2>> "$LOG/ulaknode-agent.err" &
-AGENT_PID=$!
+# ULAKNODE_AGENT_TLS encrypts the channel with the mail certificate. It's off
+# by default (loopback traffic doesn't need it); turn it on whenever the
+# sidecar reaches this port over a network. An unrecognised value leaves the
+# agent stopped, so that a typo can't silently expose a plaintext listener.
+AGENT_TLS="${ULAKNODE_AGENT_TLS:-no}"
+case "${AGENT_TLS,,}" in
+  yes|true|1)
+    log "Starting ulaknode-agent with TLS on ${AGENT_BIND}:${AGENT_PORT} (allowed: ${AGENT_ALLOWED})..."
+    /usr/local/bin/ulaknode-agent-tls \
+        >> "$LOG/ulaknode-agent.log" 2>> "$LOG/ulaknode-agent.err" &
+    AGENT_PID=$!
+    ;;
+  no|false|0)
+    log "Starting ulaknode-agent on ${AGENT_BIND}:${AGENT_PORT} (allowed: ${AGENT_ALLOWED})..."
+    socat TCP4-LISTEN:"${AGENT_PORT}",bind="${AGENT_BIND}",range="${AGENT_ALLOWED}",fork,reuseaddr \
+        EXEC:/usr/local/bin/ulaknode-agent \
+        >> "$LOG/ulaknode-agent.log" 2>> "$LOG/ulaknode-agent.err" &
+    AGENT_PID=$!
+    ;;
+  *)
+    fail "ULAKNODE_AGENT_TLS must be yes or no, not '${AGENT_TLS}' — ulaknode-agent not started"
+    ;;
+esac
 
 log "All services running."
 while true; do sleep 60; done

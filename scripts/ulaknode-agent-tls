@@ -1,0 +1,47 @@
+#!/bin/bash
+# ulaknode-agent-tls — TLS listener for ulaknode-agent, started by docker-init
+# when ULAKNODE_AGENT_TLS is enabled. Presents the mail server's certificate
+# (see ulaknode-cert); clients authenticate with the agent token, not with a
+# certificate of their own.
+#
+# socat reads the certificate only when it starts, so this restarts the
+# listener when the installed certificate changes. Connections already being
+# served finish undisturbed.
+
+set -uo pipefail
+
+PORT="${ULAKNODE_AGENT_PORT:-8787}"
+BIND="${ULAKNODE_AGENT_BIND:-127.0.0.1}"
+ALLOWED="${ULAKNODE_AGENT_ALLOWED_IPS:-127.0.0.1/32}"
+CERT=/etc/ssl/mail/fullchain.pem
+KEY=/etc/ssl/mail/privkey.pem
+CHECK_INTERVAL=60
+
+log()         { echo "[$(date +'%F %T')] $*"; }
+fingerprint() { cat "$CERT" "$KEY" 2>/dev/null | sha256sum; }
+
+pid=
+stop() { [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; exit 0; }
+trap stop SIGTERM SIGINT
+
+while true; do
+    loaded=$(fingerprint)
+    socat OPENSSL-LISTEN:"${PORT}",pf=ip4,bind="${BIND}",range="${ALLOWED}",cert="${CERT}",key="${KEY}",verify=0,openssl-min-proto-version=TLS1.2,fork,reuseaddr \
+        EXEC:/usr/local/bin/ulaknode-agent &
+    pid=$!
+
+    # Sleeping in the background lets the trap above run without delay.
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$CHECK_INTERVAL" &
+        wait $!
+        [[ "$(fingerprint)" == "$loaded" ]] || break
+    done
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log "Certificate changed, restarting the TLS listener..."
+        kill "$pid"
+    else
+        log "TLS listener exited, restarting..."
+    fi
+    wait "$pid" 2>/dev/null
+done

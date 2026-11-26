@@ -3,6 +3,14 @@
 Versions are [semver](https://semver.org/) and match the Docker Hub image
 tags (`ghcr.io/itefix/ulaknode:<version>`).
 
+## 2.10.0 - 2026-11-26
+
+- `ulaknode-agent` can now use TLS: set `ULAKNODE_AGENT_TLS=yes` to encrypt the
+  sidecar channel with the mail certificate. A renewed certificate is picked up
+  within a minute. The default stays plaintext on loopback.
+- Upgrading: nothing to do. To turn TLS on, the sidecar must support it
+  (`ulaknode-web` 1.4.0 or later).
+
 ## 2.9.0 - 2026-11-26
 
 - New `ulaknode-block` command: reject mail by sender address, sender domain

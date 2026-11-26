@@ -256,8 +256,21 @@ a bridge network, widen both:
 | `ULAKNODE_AGENT_BIND` | `127.0.0.1` | Listen address |
 | `ULAKNODE_AGENT_ALLOWED_IPS` | `127.0.0.1/32` | Allowed client IP(s), CIDR |
 | `ULAKNODE_AGENT_PORT` | `8787` | Listen port |
+| `ULAKNODE_AGENT_TLS` | `no` | `yes` encrypts the port with TLS |
 
-Leave all four unset if you're not running a sidecar — the mail server
+Without TLS, mailbox passwords and the token cross this port unencrypted
+(base64 is not encryption). That is fine on loopback. If the sidecar reaches
+the agent over a network, set `ULAKNODE_AGENT_TLS=yes` here and on the sidecar.
+
+With TLS on, the agent presents the same certificate as SMTP and IMAP, so the
+sidecar must connect using a name on that certificate, typically your mail
+hostname. Plaintext requests are then refused. The allow-list above still
+applies. A certificate installed with `ulaknode-cert install` is picked up by
+the agent within a minute. The only accepted values are `yes`/`true`/`1` and
+`no`/`false`/`0`; anything else leaves the agent stopped, with an error in
+`docker logs ulaknode`.
+
+Leave all five unset if you're not running a sidecar — the mail server
 itself never uses `ulaknode-agent`.
 
 ---
