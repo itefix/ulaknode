@@ -79,6 +79,25 @@ docker exec ulaknode ulaknode-mailbox quota-set alice@yourdomain.com 5G
 docker exec ulaknode ulaknode-mailbox list yourdomain.com
 ```
 
+## Blocking unwanted mail
+
+```bash
+# Block one sender
+docker exec ulaknode ulaknode-block add sender someone@example.com
+
+# Block a sender domain and its subdomains
+docker exec ulaknode ulaknode-block add domain example.com
+
+# Block by a regex on the From header
+docker exec ulaknode ulaknode-block add from 'easypark.*@gmail\.com'
+
+# List and remove blocks
+docker exec ulaknode ulaknode-block list
+docker exec ulaknode ulaknode-block remove sender someone@example.com
+```
+
+---
+
 ## Email security (DKIM, SPF, DMARC)
 
 ```bash

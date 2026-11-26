@@ -1,0 +1,234 @@
+#!/bin/bash
+# ulaknode-block — reject unwanted mail by sender, sender domain or From header
+# Usage: ulaknode-block <command> [options]
+#
+#   list                           — list all blocks
+#   add    sender <address>        — block one envelope sender
+#   add    domain <domain>         — block a sender domain and its subdomains
+#   add    from   <regex>          — block by regex on the From header
+#   remove <sender|domain|from> <value>
+#   init                           — wire the block files into Postfix (run at boot)
+
+set -euo pipefail
+
+CONF_DIR=/etc/postfix
+# Plain-text tables (texthash/regexp), so no postmap step — only a reload.
+SENDERS_FILE="$CONF_DIR/block_senders"
+HEADERS_FILE="$CONF_DIR/block_headers"
+DOMAINS_FILE="$CONF_DIR/virtual_domains"
+LOCK_FILE=/run/ulaknode-block.lock
+
+SENDERS_MAP="texthash:$SENDERS_FILE"
+HEADERS_MAP="regexp:$HEADERS_FILE"
+
+ACTION_TEXT="REJECT blocked by ulaknode-block"
+RULE_PREFIX='/^From:.*('
+RULE_SUFFIX=")/ $ACTION_TEXT"
+
+# Blocking all mail from one of these is almost always a mistake.
+LARGE_PROVIDERS=(gmail.com googlemail.com outlook.com hotmail.com live.com
+                 msn.com yahoo.com icloud.com me.com aol.com proton.me
+                 protonmail.com gmx.com gmx.net)
+
+usage() {
+    echo "Usage: ulaknode-block <list|add|remove|init> [args]" >&2
+    echo "" >&2
+    echo "  list                              list all blocks" >&2
+    echo "  add    sender <address> [--force] block one envelope sender" >&2
+    echo "  add    domain <domain>  [--force] block a sender domain and its subdomains" >&2
+    echo "  add    from   <regex>   [--force] block by regex on the From header" >&2
+    echo "  remove <sender|domain|from> <value>" >&2
+    echo "  init                              wire the block files into Postfix" >&2
+    echo "" >&2
+    echo "The from regex is case-insensitive, matches anywhere in the raw From" >&2
+    echo "header, and may not contain '/'. Example: 'easypark.*@gmail\\.com'" >&2
+    exit 1
+}
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+DOMAIN_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+
+validate_sender() {
+    [[ "$1" =~ ^[^@[:space:]]+@(.+)$ && "${BASH_REMATCH[1]}" =~ $DOMAIN_RE && "$1" != \#* ]] \
+        || die "invalid email address '$1'."
+}
+
+validate_domain() {
+    [[ "$1" =~ $DOMAIN_RE ]] || die "invalid domain name '$1'."
+}
+
+validate_pattern() {
+    [[ -n "$1" ]] || die "regex required."
+    [[ "$1" != *$'\n'* && "$1" != *'/'* ]] || die "regex may not contain '/' or newlines."
+    local tmp out
+    tmp="$(mktemp)"
+    printf '%s%s%s\n' "$RULE_PREFIX" "$1" "$RULE_SUFFIX" > "$tmp"
+    # postmap exits 1 both for "no match" and for a broken rule; only the
+    # latter prints a warning.
+    out="$(postmap -q 'probe' "regexp:$tmp" 2>&1)" || true
+    rm -f "$tmp"
+    [[ "$out" != *warning:* ]] || die "invalid regex '$1'."
+}
+
+own_domains() {
+    awk '!/^[[:space:]]*(#|$)/ {print tolower($1)}' "$DOMAINS_FILE" 2>/dev/null || true
+}
+
+# True if the From regex matches a made-up sender at the given domain.
+pattern_matches_domain() {
+    local tmp rc=0
+    tmp="$(mktemp)"
+    printf '%s%s%s\n' "$RULE_PREFIX" "$1" "$RULE_SUFFIX" > "$tmp"
+    postmap -q "From: Probe <probe@$2>" "regexp:$tmp" >/dev/null 2>&1 || rc=1
+    rm -f "$tmp"
+    return $rc
+}
+
+# Refuse blocks that would take out our own mail or a large share of everyone
+# else's. --force overrides.
+safety_check() {
+    local type="$1" value="$2" d p
+    case "$type" in
+      sender)
+        for d in $(own_domains); do
+            [[ "${value#*@}" != "$d" ]] \
+                || die "'$value' is in a local domain; this would also stop that user sending. Use --force to block anyway."
+        done
+        ;;
+      domain)
+        for d in $(own_domains); do
+            [[ "$d" != "$value" && "$d" != *".$value" ]] \
+                || die "'$value' covers the local domain '$d'. Use --force to block anyway."
+        done
+        for p in "${LARGE_PROVIDERS[@]}"; do
+            [[ "$value" != "$p" ]] \
+                || die "'$value' is a large mail provider. Block single senders instead, or use --force."
+        done
+        ;;
+      from)
+        for d in probe.invalid "${LARGE_PROVIDERS[@]}" $(own_domains); do
+            ! pattern_matches_domain "$value" "$d" \
+                || die "regex is too broad: it matches any sender at '$d'. Narrow it, or use --force."
+        done
+        ;;
+    esac
+}
+
+# Replace a block file with stdin, atomically.
+replace_file() {
+    local tmp
+    tmp="$(mktemp "$1.XXXXXX")"
+    cat > "$tmp"
+    chmod 644 "$tmp"
+    mv "$tmp" "$1"
+}
+
+ensure_files() {
+    local f
+    for f in "$SENDERS_FILE" "$HEADERS_FILE"; do
+        [[ -f "$f" ]] || install -m 644 /dev/null "$f"
+    done
+}
+
+reload_postfix() {
+    if postfix status >/dev/null 2>&1; then
+        postfix reload >/dev/null 2>&1 || die "postfix reload failed — see /var/log/mail.log"
+    fi
+}
+
+# Add the two maps to main.cf, keeping whatever is already configured. Fresh
+# installs ship with them; this covers a persisted /etc/postfix volume.
+init() {
+    ensure_files
+    local current
+
+    current="$(postconf -h smtpd_sender_restrictions)"
+    if [[ "$current" != *"$SENDERS_MAP"* ]]; then
+        postconf -e "smtpd_sender_restrictions = check_sender_access $SENDERS_MAP${current:+, $current}"
+        echo "ulaknode-block: added sender blocks to smtpd_sender_restrictions"
+    fi
+
+    current="$(postconf -h header_checks)"
+    if [[ "$current" != *"$HEADERS_MAP"* ]]; then
+        # nested_header_checks defaults to $header_checks, which would reject
+        # a user forwarding a blocked message as an attachment (to report it).
+        # Leave it alone if the admin already has header rules of their own.
+        if [[ -z "$current" && -z "$(postconf -n nested_header_checks)" ]]; then
+            postconf -e "nested_header_checks ="
+        fi
+        postconf -e "header_checks = ${current:+$current, }$HEADERS_MAP"
+        echo "ulaknode-block: added From blocks to header_checks"
+    fi
+}
+
+CMD="${1:-}"
+
+case "$CMD" in
+  list)
+    echo "Blocked senders:"
+    awk '!/^[[:space:]]*(#|$)/ && $1 ~ /@/ {print "  " $1}' "$SENDERS_FILE" 2>/dev/null | sort || true
+    echo "Blocked domains:"
+    awk '!/^[[:space:]]*(#|$)/ && $1 !~ /@/ {print "  " $1}' "$SENDERS_FILE" 2>/dev/null | sort || true
+    echo "Blocked From patterns:"
+    while IFS= read -r line; do
+        [[ "$line" == "$RULE_PREFIX"*"$RULE_SUFFIX" ]] || continue
+        line="${line#"$RULE_PREFIX"}"
+        printf '  %s\n' "${line%"$RULE_SUFFIX"}"
+    done < <(cat "$HEADERS_FILE" 2>/dev/null)
+    ;;
+
+  add|remove)
+    TYPE="${2:-}"
+    VALUE="${3:-}"
+    FORCE="${4:-}"
+    [[ -n "$TYPE" && -n "$VALUE" ]] || usage
+    [[ -z "$FORCE" || ( "$CMD" == add && "$FORCE" == --force ) ]] || usage
+    [[ $# -le 4 ]] || usage
+
+    case "$TYPE" in
+      sender) VALUE="${VALUE,,}"; validate_sender "$VALUE" ;;
+      domain) VALUE="${VALUE,,}"; validate_domain "$VALUE" ;;
+      from)   validate_pattern "$VALUE" ;;
+      *)      die "invalid type '$TYPE'. Allowed: sender|domain|from" ;;
+    esac
+
+    exec 9>"$LOCK_FILE"
+    flock 9
+    ensure_files
+
+    if [[ "$TYPE" == from ]]; then
+        FILE="$HEADERS_FILE"
+        RULE="$RULE_PREFIX$VALUE$RULE_SUFFIX"
+        exists() { grep -qxF -- "$RULE" "$FILE"; }
+        without() { grep -vxF -- "$RULE" "$FILE" || true; }
+    else
+        FILE="$SENDERS_FILE"
+        RULE="$VALUE  $ACTION_TEXT"
+        exists() { awk -v k="$VALUE" 'tolower($1) == k {f=1} END {exit !f}' "$FILE"; }
+        without() { awk -v k="$VALUE" 'tolower($1) != k' "$FILE"; }
+    fi
+
+    if [[ "$CMD" == add ]]; then
+        exists && die "$TYPE '$VALUE' is already blocked."
+        [[ "$FORCE" == --force ]] || safety_check "$TYPE" "$VALUE"
+        init
+        { cat "$FILE"; printf '%s\n' "$RULE"; } | replace_file "$FILE"
+        reload_postfix
+        echo "Blocked $TYPE: $VALUE"
+    else
+        exists || die "$TYPE '$VALUE' is not blocked."
+        without | replace_file "$FILE"
+        reload_postfix
+        echo "Unblocked $TYPE: $VALUE"
+    fi
+    ;;
+
+  init)
+    init
+    ;;
+
+  *)
+    usage
+    ;;
+esac

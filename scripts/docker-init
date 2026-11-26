@@ -111,6 +111,10 @@ if grep -q 'inet:127.0.0.1:10023' /etc/postfix/main.cf 2>/dev/null; then
         || fail "could not edit /etc/postfix/main.cf — remove the check_policy_service inet:127.0.0.1:10023 line manually"
 fi
 
+# Creates the block files and adds them to main.cf on a persisted volume that
+# predates ulaknode-block; does nothing otherwise.
+ulaknode-block init || fail "could not set up sender blocking — see ulaknode-block"
+
 log "Starting postfix..."
 postfix start >> "$LOG/postfix.log" 2>> "$LOG/postfix.err"
 

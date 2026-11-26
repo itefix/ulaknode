@@ -191,6 +191,32 @@ docker exec ulaknode ulaknode-alias remove info@yourdomain.com
 
 ---
 
+## Blocking unwanted mail
+
+`ulaknode-block` rejects mail you name explicitly. It does no content or link filtering. Changes take effect immediately and persist in the `/etc/postfix` volume.
+
+| Type | Matches |
+|---|---|
+| `sender` | one envelope sender address (`Return-Path`) |
+| `domain` | every envelope sender at a domain, including subdomains |
+| `from` | a regex on the `From` header, the sender your mail client shows |
+
+```bash
+docker exec ulaknode ulaknode-block add sender someone@example.com
+docker exec ulaknode ulaknode-block add domain example.com
+docker exec ulaknode ulaknode-block add from 'easypark.*@gmail\.com'
+docker exec ulaknode ulaknode-block list
+docker exec ulaknode ulaknode-block remove domain example.com
+```
+
+The `from` regex is case-insensitive, matches anywhere in the header and may not contain `/`. It sees the header as transmitted: a display name with non-ASCII characters is MIME-encoded, and a base64-encoded name will not match its readable text. Matching on the address part is the most reliable.
+
+A block that would cover one of your own domains or a large provider such as `gmail.com` is refused. Add `--force` to override.
+
+`sender` and `domain` blocks apply to every SMTP session, including your own users'. `from` blocks apply to all mail passing through the server, but not to messages attached to or nested inside another message. The exception is an upgraded server that already had its own `header_checks`: there, attached messages are checked too, unless you set `nested_header_checks =` in `main.cf`.
+
+---
+
 ## Sidecar integration (`ulaknode-agent`)
 
 If you run a separate admin UI container (like `ulaknode-web`) that needs to

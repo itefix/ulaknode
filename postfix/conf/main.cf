@@ -50,6 +50,16 @@ smtpd_tls_auth_only = yes
 smtpd_client_restrictions =
     check_client_access cidr:/etc/postfix/fail2ban_clients
 
+# Sender / sender-domain blocks and From-header blocks, both managed by
+# ulaknode-block.
+smtpd_sender_restrictions =
+    check_sender_access texthash:/etc/postfix/block_senders
+
+header_checks = regexp:/etc/postfix/block_headers
+# Defaults to $header_checks, which would reject a user forwarding a blocked
+# message as an attachment (e.g. to report it).
+nested_header_checks =
+
 smtpd_recipient_restrictions =
     permit_mynetworks,
     permit_sasl_authenticated,

@@ -3,6 +3,15 @@
 Versions are [semver](https://semver.org/) and match the Docker Hub image
 tags (`ghcr.io/itefix/ulaknode:<version>`).
 
+## 2.9.0 - 2026-11-26
+
+- New `ulaknode-block` command: reject mail by sender address, sender domain
+  (including subdomains) or a regex on the From header. It refuses blocks that
+  would cover a local domain or a large mail provider unless given `--force`.
+- Upgrading: the block files are created and added to an existing
+  `/etc/postfix/main.cf` at startup. Existing `smtpd_sender_restrictions` and
+  `header_checks` entries are kept.
+
 ## 2.8.0 - 2026-11-25
 
 - Removed SpamAssassin (spamd and spamass-milter): content scoring is gone;
